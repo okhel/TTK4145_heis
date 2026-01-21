@@ -1,12 +1,11 @@
 use std::io;
-use std::thread::*;
 use std::time::*;
 use std::sync::Arc;
+use std::thread::spawn;
 use crossbeam_channel as cbc;
 
 pub mod elevator;
 use elevator::elevio::elev::Elevio as e;
-
 
 fn main() -> io::Result<()> {
 
@@ -47,14 +46,14 @@ fn main() -> io::Result<()> {
     // Initialize Elevator Object
     let mut stop_init = false;
     match stop_button_rx.try_recv() {
-        Ok(_)       => stop_init = true,
-        Err(_)      => stop_init = false
+        Ok(_) => stop_init = true,
+        Err(_) => stop_init = false,
     }
 
     let mut obs_init = false;
     match obstruction_rx.try_recv() {
-        Ok(_)       => obs_init = true,
-        Err(_)      => obs_init = false
+        Ok(_) => obs_init = true,
+        Err(_) => obs_init = false,
     }
     
     let mut my_elev = elevator::Elevator::init(elev_io_ptr, stop_init, obs_init)?; // give ownership of channels to object
@@ -62,13 +61,15 @@ fn main() -> io::Result<()> {
     // MAIN LOOP
 
     // my_elev.goto_floor(2);
-    my_elev.open_doors();
 
 
     loop  {
         cbc::select! {
             recv(obstruction_rx) -> a => {
                 my_elev.obstruction();
+            },
+            recv(stop_button_rx) -> a => {
+                my_elev.stop_button(a.unwrap());
             },
         }
     }
