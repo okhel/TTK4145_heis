@@ -57,17 +57,20 @@ fn main() -> io::Result<()> {
         Err(_)      => obs_init = false
     }
     
-    let my_elev = elevator::Elevator::init(elev_io_ptr, stop_init, obs_init)?; // give ownership of channels to object
+    let mut my_elev = elevator::Elevator::init(elev_io_ptr, stop_init, obs_init)?; // give ownership of channels to object
     
     // MAIN LOOP
 
-    my_elev.goto_floor(2);
-
-    // if my_elev.stop_state {
-    //     println!("Stop button pressed during init");
-    // }
+    // my_elev.goto_floor(2);
+    my_elev.open_doors();
 
 
-    loop  {}
+    loop  {
+        cbc::select! {
+            recv(obstruction_rx) -> a => {
+                my_elev.obstruction();
+            },
+        }
+    }
     Ok(())
 }

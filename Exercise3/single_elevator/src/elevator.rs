@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 const NUM_FLOORS: u8 = 4;
 
+#[derive(PartialEq)]
 enum ElevState {
     DirUp,
     DirDown,
@@ -21,7 +22,7 @@ pub struct Elevator {
     io: Arc<Elevio>,
     elev_state: ElevState,
     door_state: bool,
-    pub stop_state: bool,
+    stop_state: bool,
     obs_state: bool,
 }
 
@@ -31,8 +32,8 @@ impl Elevator {
             io: elev_io,
             elev_state: ElevState::Stationary,
             door_state: false,
-            stop_state: false,    // Temporary, channel is established and status is read after initialization
-            obs_state: false,      // Temporary, channel is established and status is read after initialization
+            stop_state: stop_init,
+            obs_state: obs_init,
 
         })
     }
