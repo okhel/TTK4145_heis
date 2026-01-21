@@ -8,7 +8,7 @@ use std::io::*;
 use std::sync::Arc;
 
 
-const NUM_FLOORS: u8 = 4;
+pub const NUM_FLOORS: u8 = 4;
 
 #[derive(PartialEq)]
 enum ElevState {
@@ -22,7 +22,7 @@ pub struct Elevator {
     io: Arc<Elevio>,
     elev_state: ElevState,
     door_state: bool,
-    stop_state: bool,
+    pub stop_state: bool,
     obs_state: bool,
 }
 

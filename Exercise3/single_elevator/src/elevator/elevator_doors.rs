@@ -1,7 +1,6 @@
 use crate::elevator::{Elevator, ElevState, elevio};
 
-use std::time::Duration;
-use std::thread::sleep;
+use tokio::time::{sleep, Duration};
 
 impl Elevator {
     pub fn open_doors(&mut self) {
@@ -14,14 +13,14 @@ impl Elevator {
         self.io.door_light(false);
     }
 
-    pub fn complete_order(&mut self) {
+    pub async fn complete_order(&mut self) {
         self.open_doors();
         let duration = Duration::from_secs(3);
-        sleep(duration);
+        sleep(duration).await;
         self.close_doors();
     }
 
-    pub fn obstruction(&mut self) {
+    pub async fn obstruction(&mut self) {
 
         // TODO: Add "at floor" criteria
 
@@ -41,42 +40,30 @@ impl Elevator {
         // If the doors become unobstructed, the elevator will close the doors
         else {
             if self.door_state == true {
-                sleep(Duration::from_secs(3));
+                sleep(Duration::from_secs(3)).await;
                 self.close_doors();
             }
             self.obs_state = false;
         }
     }
 
-    pub fn stop_button(&mut self, stop_signal: bool) {
+    pub async fn stop_button(&mut self, on: bool) {
 
-        // TODO: Add "at floor" criteria
+        if on == true {
 
-        // If the stop button is pressed
-        if stop_signal == true {
-
-            // Change stop state to true and light up the stop button only once
+            // Change stop state to true, light up the stop button, and stop motor only once
             if self.stop_state == false {
                 self.stop_state = true;
                 self.io.stop_button_light(true);
-            }
-            
-            // If the elevator is moving
-            if self.elev_state != ElevState::Stationary {
-                self.io.motor_direction(elevio::elev::DIRN_STOP);
-                self.elev_state = ElevState::Stationary;
-            }
 
-            // If the elevator is at a floor
-            self.open_doors();
+                // If the elevator is moving
+                if self.elev_state != ElevState::Stationary {
+                    self.io.motor_direction(elevio::elev::DIRN_STOP);
+                    self.elev_state = ElevState::Stationary;
+                }  
+            }
         }
-
-        // If the stop button is released
-        if stop_signal == false {
-            let duration = Duration::from_secs(3);
-            sleep(duration);
-            self.close_doors();
-            
+        else {
             self.io.stop_button_light(false);
             self.stop_state = false;
         }
