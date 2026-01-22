@@ -23,7 +23,7 @@ impl Elevio {
     pub fn init(addr: &str, num_floors: u8) -> Result<Elevio> {
         Ok(Self {
             socket: Arc::new(Mutex::new(TcpStream::connect(addr)?)),
-            num_floors,
+            num_floors
         })
     }
 
