@@ -53,21 +53,27 @@ fn main() -> io::Result<()> {
 
     let mut obs_init = false;
     match obstruction_rx.try_recv() {
-        Ok(_)       => obs_init = true,
-        Err(_)      => obs_init = false
+        Ok(_)       => println!("Obstruction detected at init"),
+        Err(_)      => println!("No obstruction at init")
     }
-    
-    let my_elev = elevator::Elevator::init(elev_io_ptr, stop_init, obs_init)?; // give ownership of channels to object
-    
+
+    let my_elev = elevator::Elevator::init(elev_io_ptr, stop_init, obs_init, floor_sensor_rx)?; // give ownership of channels to object
+
     // MAIN LOOP
-
-    my_elev.goto_floor(2);
-
-    // if my_elev.stop_state {
-    //     println!("Stop button pressed during init");
-    // }
+    
 
 
-    loop  {}
+    my_elev.goto_start_floor();
+    loop  {
+        my_elev.goto_floor(1);
+        my_elev.goto_floor(2);
+        my_elev.goto_floor(1);
+        my_elev.goto_floor(3);
+        my_elev.goto_floor(1);
+        my_elev.goto_floor(4);
+        if let Some(floor) = *my_elev.current_floor.lock().unwrap() {
+            println!("Heisen er i etasje {}", floor);
+        }
+    }
     Ok(())
 }
