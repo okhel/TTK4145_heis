@@ -1,4 +1,4 @@
-use crate::elevator::{Elevator, ElevState, elevio};
+use crate::elevator::{Elevator};
 
 use tokio::time::{sleep, Duration};
 

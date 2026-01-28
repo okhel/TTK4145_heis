@@ -13,15 +13,15 @@ pub const NUM_FLOORS: u8 = 4;
 
 #[derive(PartialEq)]
 enum ElevState {
-    DirUp,
-    DirDown,
+    _DirUp,
+    _DirDown,
     Stationary
 }
 
 
 pub struct Elevator {
     io: Elevio,
-    elev_state: ElevState,
+    _elev_state: ElevState,
     door_state: bool,
     pub last_floor: Arc<Mutex<Option<u8>>>,
 
@@ -38,7 +38,7 @@ impl Elevator {
         // Define channels, receiving messages from elevator IO concurrently
         let poll_period = Duration::from_millis(25);
 
-        let (call_button_tx, call_button_rx) = mpsc::unbounded_channel::<elevio::poll::CallButton>();{
+        let (call_button_tx, _call_button_rx) = mpsc::unbounded_channel::<elevio::poll::CallButton>();{
             let elevator = elev_io.clone();
             tokio::spawn(async move {
                 elevio::poll::call_buttons(elevator, call_button_tx, poll_period).await;
@@ -64,16 +64,16 @@ impl Elevator {
 
 
         // Initialize Stop and Obstruction States
-        let mut stop_init = false;
+        let mut _stop_init = false;
         match stop_button_rx.try_recv() {
-            Ok(_) => stop_init = true,
-            Err(_) => stop_init = false,
+            Ok(_) => _stop_init = true,
+            Err(_) => _stop_init = false,
         }
 
-        let mut obs_init = false;
+        let mut _obs_init = false;
         match obstruction_rx.try_recv() {
-            Ok(_) => obs_init = true,
-            Err(_) => obs_init = false,
+            Ok(_) => _obs_init = true,
+            Err(_) => _obs_init = false,
         }
 
         let last_floor = Arc::new(Mutex::new(None));
@@ -88,7 +88,7 @@ impl Elevator {
 
         let elevator = Self {
             io: elev_io,
-            elev_state: ElevState::Stationary,
+            _elev_state: ElevState::Stationary,
             door_state: false,
             last_floor,
             floor_rx: Mutex::new(floor_sensor_rx),
