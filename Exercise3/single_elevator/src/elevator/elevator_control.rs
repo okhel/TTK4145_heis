@@ -83,6 +83,7 @@ impl Elevator {
                         between_floors = false;
                         *self.last_floor.lock().unwrap() = Some(floor);
                         if floor == target_floor {
+                            direction = Some(elevio::elev::DIRN_STOP);
                             self.io.motor_direction(elevio::elev::DIRN_STOP);
                             // TODO: Send message: At destination floor
                         }
