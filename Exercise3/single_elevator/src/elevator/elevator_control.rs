@@ -1,56 +1,97 @@
 use crate::elevator::{Elevator, elevio};
+use tokio::sync::mpsc::UnboundedReceiver as URx;
 
+fn find_direction(last_floor: u8, between_floors: bool, target_floor: u8, direction: Option<u8>) -> Option<u8> {
 
-
-impl Elevator {
-
-    // Go up until a floor sensor measurement is received
-    pub async fn goto_start_floor(&self) {
-        if self.last_floor.lock().unwrap().is_none() {
-            self.io.motor_direction(elevio::elev::DIRN_UP);
-            let floor = self.floor_rx.lock().unwrap().recv().await.unwrap();
-            *self.last_floor.lock().unwrap() = Some(floor + 1);
-            self.io.motor_direction(elevio::elev::DIRN_STOP);
+    // Set direction to appropriate direction, unless it is already set
+    if last_floor < target_floor {
+        match direction {
+            Some(elevio::elev::DIRN_UP) => None,
+            _ => Some(elevio::elev::DIRN_UP),
         }
-    }
-
-    // Go to a floor, cannot be called if not at a floor
-    pub async fn goto_floor(&self, floor: u8) {
-
-        if self.last_floor.lock().unwrap().is_none() {
-            panic!("Heisen har ingen tidligere etasjemaling");
+    } else if last_floor > target_floor {
+        match direction {
+            Some(elevio::elev::DIRN_DOWN) => None,
+            _ => Some(elevio::elev::DIRN_DOWN),
         }
-
-        else if self.last_floor.lock().unwrap().unwrap() == floor {
-            println!("Heisen er allerede i etasje {}", floor);
-            return;
-        }
-
-        else if self.last_floor.lock().unwrap().unwrap() > floor {
-            self.io.motor_direction(elevio::elev::DIRN_DOWN);
-            loop {
-                let current_floor = self.floor_rx.lock().unwrap().recv().await.unwrap() + 1;
-                *self.last_floor.lock().unwrap() = Some(current_floor); // Update last floor
-                println!("Heisen er i etasje {}, går ned til etasje {}", current_floor, floor);
-                if current_floor == floor {
-                    self.io.motor_direction(elevio::elev::DIRN_STOP);
-                    println!("Heisen er framme i etasje {}", floor);
-                    break;
+    } else {
+        match direction {
+            Some(elevio::elev::DIRN_STOP) => None,
+            _ => {
+                if between_floors == false{
+                    Some(elevio::elev::DIRN_STOP)
+                } else {
+                    if direction == Some(elevio::elev::DIRN_UP) {
+                        Some(elevio::elev::DIRN_DOWN)
+                    } else  {
+                        Some(elevio::elev::DIRN_UP)
+                    }
                 }
             }
         }
+    }
+}
 
-        else if self.last_floor.lock().unwrap().unwrap() < floor {
-            self.io.motor_direction(elevio::elev::DIRN_UP);
-            loop {
-                let current_floor = self.floor_rx.lock().unwrap().recv().await.unwrap() + 1;
-                *self.last_floor.lock().unwrap() = Some(current_floor); // Update last floor
-                println!("Heisen er i etasje {}, går opp til etasje {}", current_floor, floor);
-                if current_floor == floor {
-                    self.io.motor_direction(elevio::elev::DIRN_STOP);
-                    println!("Heisen er framme i etasje {}", floor);
-                    break;
+impl Elevator {
+
+    // Go to a floor, cannot be called if not at a floor
+    pub async fn goto_floor(&mut self, mut call_rx: URx<elevio::poll::CallButton>, mut floor_rx: URx<Option<u8>>) {
+
+        // If not at a floor, go to start floor
+        match URx::try_recv(&mut floor_rx) {
+            Ok(Some(floor)) => {
+                *self.last_floor.lock().unwrap() = Some(floor);
+            }
+            _ => {
+                self.io.motor_direction(elevio::elev::DIRN_UP);
+                loop {
+                    if let Some(floor) = floor_rx.recv().await.unwrap() {
+                        *self.last_floor.lock().unwrap() = Some(floor + 1);
+                        self.io.motor_direction(elevio::elev::DIRN_STOP);
+                        break;
+                    }
                 }
+            }
+        }
+        
+        let mut direction: Option<u8> = None;
+        let mut target_floor: u8 = 0;
+        let mut between_floors: bool = false;
+
+        loop {
+            tokio::select! {
+                biased;
+                
+                // Recieved new target floor
+                Some(call) = call_rx.recv() => {
+                    target_floor = call.floor;
+                    let mut last_floor = self.last_floor.lock().unwrap().unwrap();
+
+                    // Update direction of travel, if necessary
+                    match find_direction(last_floor, between_floors, target_floor, direction) {
+                        Some(dir) => {
+                            direction = Some(dir);
+                            self.io.motor_direction(dir);
+                        },
+                        None => (),
+                    }
+                }
+
+                // Recieved new floor sensor measurement
+                Some(floor_opt) = floor_rx.recv() => {
+                    if let Some(floor) = floor_opt {
+                        between_floors = false;
+                        *self.last_floor.lock().unwrap() = Some(floor);
+                        if floor == target_floor {
+                            self.io.motor_direction(elevio::elev::DIRN_STOP);
+                            // TODO: Send message: At destination floor
+                        }
+                    }
+                    else {
+                        between_floors = true;
+                    }
+                }
+                else => (),
             }
         }
     }

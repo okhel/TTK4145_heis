@@ -33,18 +33,17 @@ pub async fn call_buttons(
 
 pub async fn floor_sensor(
     elev: elev::Elevio,
-    ch: mpsc::UnboundedSender<u8>,
+    ch: mpsc::UnboundedSender<Option<u8>>,
     period: time::Duration,
 ) {
-    let mut prev = u8::MAX;
+    let mut prev: Option<u8> = None;
     loop {
-        if let Some(f) = elev.floor_sensor() {
-            if f != prev {
-                if ch.send(f).is_err() {
-                    return;
-                }
-                prev = f;
+        let current = elev.floor_sensor();
+        if current != prev {
+            if ch.send(current).is_err() {
+                return;
             }
+            prev = current;
         }
         time::sleep(period).await;
     }
