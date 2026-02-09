@@ -25,11 +25,12 @@ async fn main() -> io::Result<()> {
     let (floor_msg_tx, floor_msg_rx) = uc::<CallButton>(); // Elevator sends floor messages to order management
     let (elev_req_tx, elev_req_rx) = uc::<bool>(); // Order management sends requests to elevator
     let (elev_resp_tx, elev_resp_rx) = uc::<u8>(); // Elevator sends responses to order management
+    let (floor_msg_light_tx, floor_msg_light_rx) = uc::<(CallButton, bool)>(); // Elevator sends floor messages to light handling task
 
     let order_management_task = tokio::spawn(async move {
-        order_management::order_management_runner(floor_order_rx, floor_msg_rx, floor_cmd_tx, elev_req_tx, elev_resp_rx).await});
+        order_management::order_management_runner(floor_order_rx, floor_msg_rx, floor_cmd_tx, elev_req_tx, elev_resp_rx, floor_msg_light_tx).await});
     let elevator_runner_task = tokio::spawn(async move {
-        elevator::elevator_runner(floor_order_tx, floor_msg_tx, floor_cmd_rx, elev_req_rx, elev_resp_tx).await });
+        elevator::elevator_runner(floor_order_tx, floor_msg_tx, floor_cmd_rx, elev_req_rx, elev_resp_tx, floor_msg_light_rx).await });
 
     let _ = tokio::join!(order_management_task, elevator_runner_task);
     
