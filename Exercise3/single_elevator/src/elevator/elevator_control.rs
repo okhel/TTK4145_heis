@@ -87,11 +87,7 @@ impl Elevator {
         }
     }
 
-    pub async fn io_sensing(
-        &self, mut call_rx: URx<elevio::poll::CallButton>,
-        floor_order_tx: UTx<CallButton>,
-        mut elev_req_rx: URx<bool>,
-        elev_resp_tx: UTx<u8>) {
+    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, floor_order_tx: UTx<CallButton>, mut elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>) {
         loop {
             tokio::select! {
                 
@@ -106,6 +102,13 @@ impl Elevator {
         }
     }
     
+    pub async fn set_lights(&self, mut floor_msg_rx: URx<(CallButton, bool)>) {
+        loop {
+            if let Some((call, on)) = floor_msg_rx.recv().await {
+                self.io.call_button_light(call.floor, call.call, on);
+            }
+        }
+    }
 }
 
 

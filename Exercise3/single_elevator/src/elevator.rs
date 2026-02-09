@@ -45,13 +45,14 @@ impl Elevator {
 
 
 
-pub async fn elevator_runner(floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<CallButton>, floor_cmd_rx: URx<CallButton>, elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>) -> Result<()> {
+pub async fn elevator_runner(floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<CallButton>, floor_cmd_rx: URx<CallButton>, elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>, floor_msg_light_rx: URx<(CallButton, bool)>) -> Result<()> {
 
     // Initialize elevator
     let my_elev = Arc::new(Elevator::init().await?);
 
     let motor_control_elevio = my_elev.io.clone();
     let io_sensing_elevio = my_elev.io.clone();
+    let io_light_elevio = my_elev.io.clone();
     let poll_period = Duration::from_millis(25);
 
     // Create channels to elevator IO for motor control task
@@ -67,6 +68,7 @@ pub async fn elevator_runner(floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<
         tokio::spawn(async move {
             elevio::poll::call_buttons(elevator, call_button_tx, poll_period).await;
         });}
+
     
     // Start tasks
     let motor_control_task = tokio::spawn({
@@ -83,7 +85,14 @@ pub async fn elevator_runner(floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<
         }
     });
 
-    let _ = tokio::join!(motor_control_task, io_sensing_task);
+    let io_light_task = tokio::spawn({
+        let elev = Arc::clone(&my_elev);
+        async move {
+            elev.set_lights(floor_msg_light_rx).await;
+        }
+    });
+
+    let _ = tokio::join!(motor_control_task, io_sensing_task, io_light_task);
     Ok(())
 
 }
