@@ -1,7 +1,9 @@
 use std::{io, env};
-
+use tokio::sync::mpsc::unbounded_channel as uc;
+use elevator::elevio::poll::CallButton as CallButton;
 
 pub mod elevator;
+pub mod order_management;
 pub mod networking;
 // use elevator::{elevio::elev::Elevio as e, NUM_FLOORS};
 
@@ -16,8 +18,20 @@ async fn main() -> io::Result<()> {
     // println!("Connecting to {}", ids[1]);
 
     // networking::udptest(ids[1]).await;
-    
-    elevator::elevator_runner().await?;
+
+    // Create channels for module communication
+    let (floor_order_tx, floor_order_rx) = uc::<CallButton>(); // Elevator sends order requests to order management
+    let (floor_cmd_tx, floor_cmd_rx) = uc::<CallButton>(); // Order management sends commands to elevator
+    let (floor_msg_tx, floor_msg_rx) = uc::<CallButton>(); // Elevator sends floor messages to order management
+    let (elev_req_tx, elev_req_rx) = uc::<bool>(); // Order management sends requests to elevator
+    let (elev_resp_tx, elev_resp_rx) = uc::<u8>(); // Elevator sends responses to order management
+
+    let order_management_task = tokio::spawn(async move {
+        order_management::order_management_runner(floor_order_rx, floor_msg_rx, floor_cmd_tx, elev_req_tx, elev_resp_rx).await});
+    let elevator_runner_task = tokio::spawn(async move {
+        elevator::elevator_runner(floor_order_tx, floor_msg_tx, floor_cmd_rx, elev_req_rx, elev_resp_tx).await });
+
+    let _ = tokio::join!(order_management_task, elevator_runner_task);
     
     Ok(())
 }
