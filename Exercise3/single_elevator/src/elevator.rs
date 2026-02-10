@@ -6,6 +6,7 @@ pub mod elevio;
 use elevio::elev::Elevio;
 use elevio::poll::CallButton as CallButton;
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc};
+use crate::order_management::Order;
 
 use std::{io::*, time::*, sync::{Arc, Mutex}};
 
@@ -25,6 +26,7 @@ pub struct Elevator {
     elev_state: Mutex<ElevState>,
     door_state: bool,
     pub last_floor: Mutex<Option<u8>>,
+    id: usize,
 }
 
 impl Elevator {
@@ -35,6 +37,7 @@ impl Elevator {
             elev_state: Mutex::new(ElevState::Stationary),
             door_state: false,
             last_floor: Mutex::new(None),
+            id: 0,
         };
 
         Ok(elevator)
@@ -45,7 +48,7 @@ impl Elevator {
 
 
 
-pub async fn elevator_runner(floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<CallButton>, floor_cmd_rx: URx<CallButton>, elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>, floor_msg_light_rx: URx<(CallButton, bool)>) -> Result<()> {
+pub async fn elevator_runner(floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<CallButton>, floor_cmd_rx: URx<CallButton>, elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>, floor_msg_light_rx: URx<(Order, bool)>) -> Result<()> {
 
     // Initialize elevator
     let my_elev = Arc::new(Elevator::init().await?);

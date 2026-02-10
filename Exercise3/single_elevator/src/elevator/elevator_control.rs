@@ -2,6 +2,7 @@ use crate::elevator::{Elevator, elevio};
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 use tokio::time::{sleep, Duration};
 use crate::elevator::elevio::poll::CallButton as CallButton;
+use crate::order_management::Order;
 
 impl Elevator {
 
@@ -102,10 +103,12 @@ impl Elevator {
         }
     }
     
-    pub async fn set_lights(&self, mut floor_msg_rx: URx<(CallButton, bool)>) {
+    pub async fn set_lights(&self, mut floor_msg_rx: URx<(Order, bool)>) {
         loop {
-            if let Some((call, on)) = floor_msg_rx.recv().await {
-                self.io.call_button_light(call.floor, call.call, on);
+            if let Some((order, on)) = floor_msg_rx.recv().await {
+                if order.elevator == self.id {
+                    self.io.call_button_light(order.call.floor, order.call.call, on);
+                }
             }
         }
     }
