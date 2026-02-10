@@ -3,11 +3,11 @@ use std::collections::VecDeque;
 
 use crate::elevator::elevio::poll::CallButton as CallButton;
 
+const m: u8 = 3; // number of floors
+const n: u8 = 3; // number of elevators
 
 pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut floor_msg_rx: URx<CallButton>, floor_cmd_tx: UTx<CallButton>, elev_req_tx: UTx<bool>, mut elev_resp_rx: URx<u8>, floor_msg_light_tx: UTx<(CallButton, bool)>) -> std::io::Result<()> {
     
-    let m: u8 = 3; // number of floors
-    let n: u8 = 3; // number of elevators
     let mut orders: VecDeque<CallButton> = VecDeque::with_capacity(3*m as usize);       // Ring buffer of all orders
     let mut positions: Vec<Option<u8>> = vec![None; n as usize];                        // List of current positions for each elevator
     let mut current_orders: Vec<Option<CallButton>> = Vec::with_capacity(n as usize);   // List of current order for each elevator
@@ -15,7 +15,7 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
 
     // (re)assign orders whenever a new order is received or the status of an elevator changes
     loop {
-        println!("Orders: {:?}", orders);
+        // println!("Orders: {:?}", orders);
         tokio::select! { 
             Some(call) = URx::recv(&mut floor_order_rx) => {
 
@@ -33,14 +33,12 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
                 let new_order_found = assign_new_orders(call, &mut orders, &mut positions, &mut current_orders);
                 if new_order_found {
                     let _ = floor_cmd_tx.send(current_orders[0].clone().unwrap());
-                    println!("Serving order: {:?}", current_orders[0].clone().unwrap());
+                    // println!("Serving order: {:?}", current_orders[0].clone().unwrap());
                 }
-                
-
             }
 
             Some(call) = URx::recv(&mut floor_msg_rx) => {
-                println!("Arrived at floor: {}", call.floor);
+                // println!("Arrived at floor: {}", call.floor);
 
 
                 // ---------- CLEAR ORDER ----------
@@ -51,9 +49,7 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
                     let _ = floor_msg_light_tx.send((call.clone(), false));
                 }
                 orders.retain(|order| order != &CallButton { floor: call.floor, call: 2 });
-                current_orders[0] = None;
-                
-                
+                current_orders[0] = None;        
                 // TODO: Turn off light
                 let _ = floor_msg_light_tx.send((CallButton { floor: call.floor, call: 2 }, false));
                 println!("Cleared order {:?}. Orders: {:?}", call, orders);
@@ -83,7 +79,7 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
                         let _ = floor_cmd_tx.send(current_orders[0].clone().unwrap());
                     }
                     else {
-                        println!("No new order");
+                        // println!("No new order");
                         // TODO: Turn off light
                         // let _ = floor_msg_light_tx.send((call.clone(), false));
                     }
@@ -100,13 +96,9 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
 fn assign_new_orders(call: CallButton, orders: &mut VecDeque<CallButton>, positions: &Vec<Option<u8>>,
     mut current_orders: &mut Vec<Option<CallButton>>) -> bool  {
 
-    // Assign order to elevator if there is no current order OR assign order on the way to the current order
+    // Assign order to elevator if there is no current order OR assign order on the way to the current order    
 
-    // If there are orders below the hall order
-    
-
-    // TODO: Move cab orders to the front of the queue.
-    // Rebuild the queue to avoid mutating while iterating.
+    // Rebuild the queue with cab orders at the front
     let mut cab_orders: VecDeque<CallButton> = VecDeque::with_capacity(orders.len());
     let mut other_orders: VecDeque<CallButton> = VecDeque::with_capacity(orders.len());
     for order in orders.iter() {
@@ -125,18 +117,33 @@ fn assign_new_orders(call: CallButton, orders: &mut VecDeque<CallButton>, positi
         return false;
     }
     else {
-        orders.push_back(call);
+        orders.push_back(call.clone());
     }
-    
-    // TODO: If there are no assigned orders, just assign the first order to the closest elevator
-    if current_orders[0].is_none() {
-        current_orders[0] = Some(orders.pop_front().unwrap());
+
+    // If all elements in current_orders are None
+    if current_orders.iter().all(|order| order.is_none()) {
+        let mut closest_elev: usize = 0; // Default to first elevator
+        let mut closest_distance: u8 = m;
+        for i in 0..n as usize {
+            if positions[i].is_some() {
+                let new_closest_distance = u8::abs_diff(positions[i].unwrap(), call.clone().floor);
+                if new_closest_distance < closest_distance {
+                    closest_distance = new_closest_distance;
+                    closest_elev = i;
+                    break;
+
+                }
+            }
+        }
+        // println!("Assigning order to elevator: {}", closest_elev);
+        current_orders[closest_elev] = Some(orders.pop_front().unwrap());
         return true;
     }
 
     // TODO: Do this for all elevators
     let curr_order = current_orders[0].as_ref().unwrap().clone();
     let mut replacement: CallButton = curr_order.clone();
+
 
     // TODO: Refactor to work for all elevators
     for call in orders.iter() {
@@ -146,16 +153,18 @@ fn assign_new_orders(call: CallButton, orders: &mut VecDeque<CallButton>, positi
                 || (curr_order.floor > call.floor && call.floor > positions[0].unwrap()
                 && call.call != 1 && curr_order.call != 1) {
             replacement = CallButton { floor: call.floor, call: call.call };
-            println!("Order on the way, stopping");
+            // println!("Order on the way, stopping");
         }
     }
+
+
     if replacement == *current_orders[0].as_ref().unwrap() {
         return false;
     }
     else {
-        // Remove the promoted order from the queue to avoid duplicates.
-        orders.retain(|order| order != &replacement);
+        // Push demoted order to the front of the queue and remove the promoted order from the queue to avoid duplicates.
         orders.push_front(current_orders[0].take().unwrap());
+        orders.retain(|order| order != &replacement);
         current_orders[0] = Some(replacement);
         return true;
     }
@@ -185,9 +194,8 @@ fn assign_next_order(call: CallButton, orders: &mut VecDeque<CallButton>,
                 }
             }
 
-            println!("No orders above, sending pseudo hall down order");
-            // No orders above, clear hall order in down direction, assign pseudo hall down order at current floor (see spec)
-            order_found.0 = Some(CallButton { floor: call.floor, call: 1 });
+            // Elevator changing direction. Clear the hall order in the opposite direction
+            order_found.1 = Some(CallButton { floor: call.floor, call: 1 });
         }
         1 => 'HallDown: {
             // Try to assign order below in the same direction, else just assign something
@@ -207,32 +215,22 @@ fn assign_next_order(call: CallButton, orders: &mut VecDeque<CallButton>,
                 }
             }
 
-            // No orders below, clear hall order in up direction, assign pseudo hall up order at current floor (see spec)
-            order_found.0 = Some(CallButton { floor: call.floor, call: 0 });
-
-            // for order in orders.iter() {
-            //     if order.floor > call.floor && order.call != 1 {
-            //         order_found = (order.clone(), Some(CallButton { floor: call.floor, call: 0 }));
-            //         break 'HallDown;
-            //     }
-            // }
+            // Elevator changing direction. Clear the hall order in the opposite direction
+            order_found.1 = Some(CallButton { floor: call.floor, call: 0 });
         }
         _ => 'Cab: {
             // Pick the first order, see if there are any hall orders at the current floor, in the direction of the first order
+            
             order_found.0 = Some(orders.pop_front().unwrap());
             if call.floor < order_found.0.as_ref().unwrap().floor{ order_found.1 = Some(CallButton { floor: call.floor, call: 0 })} // Hall up
             else if call.floor > order_found.0.as_ref().unwrap().floor{ order_found.1 = Some(CallButton { floor: call.floor, call: 1 })} // Hall down
+            // TODO: Assign cab order below
             break 'Cab;
         }
     }
 
-    // If there are no orders
-    if orders.len() == 0 {
-        order_found.0 = None;
-        order_found.1 = Some(call.clone());
-    }
-
     current_orders[0] = order_found.0.clone();
-    println!("Next order: {:?}", current_orders[0]);
-    (order_found.0, order_found.1)
+    // println!("Next order: {:?}", current_orders[0]);
+    return (order_found.0, order_found.1);
+
 }
