@@ -6,7 +6,7 @@ use crate::elevator::elevio::poll::CallButton as CallButton;
 const m: u8 = 3; // number of floors
 const n: u8 = 3; // number of elevators
 
-pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut floor_msg_rx: URx<CallButton>, floor_cmd_tx: UTx<CallButton>, elev_req_tx: UTx<bool>, mut elev_resp_rx: URx<u8>) -> std::io::Result<()> {
+pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut floor_msg_rx: URx<CallButton>, floor_cmd_tx: UTx<CallButton>, elev_req_tx: UTx<bool>, mut elev_resp_rx: URx<u8>, floor_msg_light_tx: UTx<(CallButton, bool)>) -> std::io::Result<()> {
     
     let mut orders: VecDeque<CallButton> = VecDeque::with_capacity(3*m as usize);       // Ring buffer of all orders
     let mut positions: Vec<Option<u8>> = vec![None; n as usize];                        // List of current positions for each elevator
@@ -19,7 +19,8 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
         tokio::select! { 
             Some(call) = URx::recv(&mut floor_order_rx) => {
 
-                // TODO: Turn on light
+                // TODO: Turn on light for new order
+                let _ = floor_msg_light_tx.send((call.clone(), true));
 
                 // ---------- REQUEST ELEVATOR POSITIONS ----------
                 let _ = elev_req_tx.send(true);
@@ -45,11 +46,12 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
                 if call.call != 2 {
                     orders.retain(|order| order != &call);
                     // TODO: Turn off light
+                    let _ = floor_msg_light_tx.send((call.clone(), false));
                 }
                 orders.retain(|order| order != &CallButton { floor: call.floor, call: 2 });
                 current_orders[0] = None;        
                 // TODO: Turn off light
-
+                let _ = floor_msg_light_tx.send((CallButton { floor: call.floor, call: 2 }, false));
                 println!("Cleared order {:?}. Orders: {:?}", call, orders);
 
 
@@ -66,6 +68,7 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
                     if clear_call.is_some() {
                         orders.retain(|order| order != clear_call.as_ref().unwrap());
                         // TODO: Turn off light
+                        let _ = floor_msg_light_tx.send((clear_call.unwrap().clone(), false));
                     }
 
                     if next_order.is_some() {
@@ -78,6 +81,7 @@ pub async fn order_management_runner(mut floor_order_rx: URx<CallButton>, mut fl
                     else {
                         // println!("No new order");
                         // TODO: Turn off light
+                        // let _ = floor_msg_light_tx.send((call.clone(), false));
                     }
                 }
             }
