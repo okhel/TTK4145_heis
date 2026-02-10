@@ -3,6 +3,11 @@ use std::collections::VecDeque;
 
 use crate::elevator::elevio::poll::CallButton as CallButton;
 
+pub struct Order {
+    pub call: CallButton,
+    pub elevator: usize,
+}
+
 const m: u8 = 3; // number of floors
 const n: u8 = 3; // number of elevators
 
@@ -194,8 +199,11 @@ fn assign_next_order(call: CallButton, orders: &mut VecDeque<CallButton>,
                 }
             }
 
-            // Elevator changing direction. Clear the hall order in the opposite direction
-            order_found.1 = Some(CallButton { floor: call.floor, call: 1 });
+            // No order above, clear hall down order
+            order_found.1 = Some(CallButton { floor: call.floor, call: 0 });
+            // Changing direction, assign hall up order at the current floor (see spec)
+            order_found.0 = Some(CallButton { floor: call.floor, call: 1 });
+            println!("Changing direction");
         }
         1 => 'HallDown: {
             // Try to assign order below in the same direction, else just assign something
@@ -215,8 +223,11 @@ fn assign_next_order(call: CallButton, orders: &mut VecDeque<CallButton>,
                 }
             }
 
-            // Elevator changing direction. Clear the hall order in the opposite direction
-            order_found.1 = Some(CallButton { floor: call.floor, call: 0 });
+            // No order below, clear hall up order
+            order_found.1 = Some(CallButton { floor: call.floor, call: 1 });
+            // Changing direction, assign hall down order at the current floor (see spec)
+            order_found.0 = Some(CallButton { floor: call.floor, call: 0 });
+            println!("Changing direction");
         }
         _ => 'Cab: {
             // Pick the first order, see if there are any hall orders at the current floor, in the direction of the first order
