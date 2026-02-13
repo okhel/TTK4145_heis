@@ -106,10 +106,11 @@ impl Elevator {
     
     pub async fn set_lights(&self, mut floor_msg_rx: URx<(Order, bool)>) {
         loop {
+            println!("set_lights waiting for message");
             if let Some((order, on)) = floor_msg_rx.recv().await {
-                if order.elevator == self.id {
+                //if order.elevator == self.id {
                     self.io.call_button_light(order.call.floor, order.call.call, on);
-                }
+                //}
             }
         }
     }

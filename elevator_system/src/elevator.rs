@@ -33,16 +33,15 @@ impl Elevator {
     async fn init(id: u8) -> Result<Elevator> {
 
         let elevator = Self {
-            io: Elevio::init(&format!("localhost:200{}", id), NUM_FLOORS)?,
+            io: Elevio::init(&format!("192.168.0.155:{}",id), NUM_FLOORS)?,
             elev_state: Mutex::new(ElevState::Stationary),
             door_state: false,
             last_floor: Mutex::new(None),
-            id: 0,
+            id: id as usize,
         };
 
         Ok(elevator)
 
-        
     }
 }
 

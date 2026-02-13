@@ -15,7 +15,7 @@ pub mod process;
 async fn main() -> io::Result<()> {
 
     let id: u8 = std::env::args().last().unwrap().parse().unwrap();
-    let mut ids = vec![19, 20];
+    let mut ids = vec![19, 20, 21];
 
     ids.retain(|x| *x !=id);
     println!("I'm {}", id);
@@ -37,7 +37,7 @@ async fn main() -> io::Result<()> {
     let elevator_runner_task = tokio::spawn(async move {
         elevator::elevator_runner(id, floor_order_tx, floor_msg_tx, floor_cmd_rx, elev_req_rx, elev_resp_tx, floor_msg_light_rx, at_floor_tx).await });
     let network_runner_task = tokio::spawn(async move {
-        networking::network_runner(at_floor_rx, id, ids[0]).await;
+        networking::network_runner(at_floor_rx, id, ids).await;
     });
 
     let _ = tokio::join!(order_management_task, elevator_runner_task, network_runner_task);
