@@ -3,7 +3,7 @@ use tokio::time;
 
 use super::elev;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CallButton {
     pub floor: u8,
     pub call: u8,

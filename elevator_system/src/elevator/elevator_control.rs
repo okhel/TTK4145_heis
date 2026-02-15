@@ -2,12 +2,11 @@ use crate::elevator::{Elevator, elevio};
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 use tokio::time::{sleep, Duration};
 use crate::elevator::elevio::poll::CallButton as CallButton;
-use crate::order_management::Order;
 
 impl Elevator {
 
     // Go to a floor, cannot be called if not at a floor
-    pub async fn motor_control(&self, mut floor_cmd_rx: URx<CallButton>, floor_msg_tx: UTx<CallButton>, mut floor_sensor_rx: URx<Option<u8>>, at_floor_tx: UTx<u8>) {
+    pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, master_position_tx: UTx<u8>) {
 
         // If not at a floor, go to start floor
         match URx::try_recv(&mut floor_sensor_rx) {
@@ -25,6 +24,10 @@ impl Elevator {
                 }
             }
         }
+        let master_floor = self.last_floor.lock().unwrap().unwrap();
+        let _ = update_floor_tx.send(master_floor);
+        // Send master position to order management
+        let _ = master_position_tx.send(master_floor);
         
         let mut direction: Option<u8> = Some(elevio::elev::DIRN_STOP);
         let mut target_call: CallButton = CallButton { floor: 0, call: 0 };
@@ -35,7 +38,7 @@ impl Elevator {
                 biased;
                 
                 // Recieved new target floor
-                Some(call) = floor_cmd_rx.recv() => {
+                Some(call) = call_assign_rx.recv() => {
                     target_call = call;
                     let last_floor = self.last_floor.lock().unwrap().unwrap();
 
@@ -54,10 +57,10 @@ impl Elevator {
                         // If there is no change in direction, and direction is stop, send order complete message
                         None => {
                             if direction == Some(elevio::elev::DIRN_STOP) {
-                                println!("Recieved order to current floor, when stopped");
+                                // println!("Recieved order to current floor, when stopped");
                                 // TODO: Wait 3 seconds, open doors stuff, THEN send order complete message
                                 sleep(Duration::from_secs(3)).await;
-                                let _ = floor_msg_tx.send(target_call.clone());
+                                let _ = call_complete_tx.send(target_call.clone());
                             }
                         },
                     }
@@ -68,7 +71,7 @@ impl Elevator {
                     if let Some(floor) = floor_opt {
                         between_floors = false;
                         *self.last_floor.lock().unwrap() = Some(floor);
-                        let _ = at_floor_tx.send(floor.clone());
+                        let _ = update_floor_tx.send(floor);
 
                         if floor == target_call.floor {
                             direction = Some(elevio::elev::DIRN_STOP);
@@ -77,7 +80,7 @@ impl Elevator {
 
                             // TODO: Wait 3 seconds, open doors stuff, THEN send order complete message
                             sleep(Duration::from_secs(3)).await;
-                            let _ = floor_msg_tx.send(target_call.clone());
+                            let _ = call_complete_tx.send(target_call.clone());
                         }
                     }
                     else {
@@ -89,27 +92,22 @@ impl Elevator {
         }
     }
 
-    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, floor_order_tx: UTx<CallButton>, mut elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>) {
+    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, call_request_tx: UTx<CallButton>) {
         loop {
             tokio::select! {
                 
                 Some(call) = call_rx.recv() => {
-                    let _ = floor_order_tx.send(call);
+                    let _ = call_request_tx.send(call);
                 }
 
-                Some(_) = elev_req_rx.recv() => {
-                    let _ = elev_resp_tx.send(self.last_floor.lock().unwrap().unwrap());
-                }
             }
         }
     }
     
-    pub async fn set_lights(&self, mut floor_msg_rx: URx<(Order, bool)>) {
+    pub async fn set_lights(&self, mut call_light_assign_rx: URx<(CallButton, bool)>) {
         loop {
-            if let Some((order, on)) = floor_msg_rx.recv().await {
-                if order.elevator == self.id {
-                    self.io.call_button_light(order.call.floor, order.call.call, on);
-                }
+            if let Some((call, on)) = call_light_assign_rx.recv().await {
+                self.io.call_button_light(call.floor, call.call, on);
             }
         }
     }
