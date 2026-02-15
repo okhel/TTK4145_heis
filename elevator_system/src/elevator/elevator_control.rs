@@ -1,8 +1,10 @@
 use crate::elevator::{Elevator, elevio};
+use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 use crate::elevator::elevio::poll::CallButton as CallButton;
 use crate::order_management::Order;
+use std::collections::HashMap;
 
 impl Elevator {
 
@@ -112,6 +114,37 @@ impl Elevator {
                     self.io.call_button_light(order.call.floor, order.call.call, on);
                 //}
             }
+        }
+    }
+
+    pub async fn master_slave_control(&self, mut elevs_alive_rx: URx<Vec<u8>>) {
+        let delay = sleep(Duration::from_secs(4));
+        tokio::pin!(delay);
+        let mut saved_elevs_alive: Vec<u8> = Vec::new();
+        loop {
+            if let Some(elevs_alive) = elevs_alive_rx.recv().await {
+
+                select! {
+                    _ = &mut delay => {
+                        saved_elevs_alive = elevs_alive.clone();
+                    }
+                    new_message = elevs_alive_rx.recv() => {
+                        if let Some(new_elevs_alive) = new_message {
+                            saved_elevs_alive = new_elevs_alive.clone();
+                        }
+                    }
+                }
+
+                println!("Received alive elevators: {:?}, at time {}", saved_elevs_alive, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+
+                if saved_elevs_alive.iter().all(|&id| self.id <= id) {
+                    *self.master_slave_state.lock().unwrap() = true;
+                } else {
+                    *self.master_slave_state.lock().unwrap() = false;
+                }
+            }
+            println!("Master-slave state: {}, at time {}", *self.master_slave_state.lock().unwrap(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+            sleep(Duration::from_secs(1)).await;
         }
     }
 }

@@ -35,21 +35,33 @@ pub async  fn ping_alive_receiver(recv_sock: Arc<UdpSocket>, ping_received_tx: U
     }
 }
 
-pub async fn store_online_elevators(mut ping_received_rx: URx<u8>) {
+pub async fn store_online_elevators(local_id: u8, elevs_alive_tx: UTx<Vec<u8>>, mut ping_received_rx: URx<u8>) {
     let mut online_elevators: HashMap<u8, time::Instant> = HashMap::new();
     let timeout_duration = Duration::from_millis(5000);
     loop {
         tokio::select! {
             Some(received_id) = ping_received_rx.recv() => {
-                online_elevators.insert(received_id, time::Instant::now());
+                //println!("Received ping from elevator {}", received_id);
+                let was_new = online_elevators.insert(received_id, time::Instant::now());
+
+                if was_new.is_none() {
+                    elevs_alive_tx.send(online_elevators.keys().cloned().collect()).unwrap();
+                }
             }
             
             _ = time::sleep(Duration::from_millis(500)) => {
                 let now = time::Instant::now();
+                let before_len = online_elevators.len();
+                online_elevators.insert(local_id, time::Instant::now());
+
                 online_elevators.retain(|_id, last_seen| {
                     now.duration_since(*last_seen) < timeout_duration
                 });
-                println!("Online elevators: {:?}", online_elevators.keys())
+                if online_elevators.len() != before_len {
+                    elevs_alive_tx.send(online_elevators.keys().cloned().collect()).unwrap();
+                    println!("Current online elevators: {:?}", online_elevators.keys());
+                }
+                //println!("Online elevators: {:?}", online_elevators.keys())
             }
         }
     }
@@ -57,7 +69,7 @@ pub async fn store_online_elevators(mut ping_received_rx: URx<u8>) {
 
 pub const MAGIC: [u8; 4] = *b"EVL1";       // tag to make sure packet is sent from us, kinda redundant might delete later 
 
-pub async fn network_runner(mut at_floor_rx: URx<u8>, local_id: u8, remote_ids: Vec<u8>){
+pub async fn network_runner(elevs_alive_tx: UTx<Vec<u8>>, mut at_floor_rx: URx<u8>, local_id: u8, remote_ids: Vec<u8>){
     let (ping_received_tx, ping_received_rx) = uc::<u8>();
     let socket = init_socket(&local_id.to_string()).await;
     let sender_socket = socket.clone();
@@ -68,7 +80,7 @@ pub async fn network_runner(mut at_floor_rx: URx<u8>, local_id: u8, remote_ids: 
     let ping_alive_receiver_task = tokio::spawn(async move {
         ping_alive_receiver(receiver_socket.clone(), ping_received_tx).await});
     let store_online_elevators_task = tokio::spawn(async move {
-        store_online_elevators(ping_received_rx).await});
+        store_online_elevators(local_id, elevs_alive_tx, ping_received_rx).await});
 
     // let udp_sender_task = tokio::spawn(async move {
     //     udp_sender(sender_socket, format!("192.168.0.155:280{}", 0), at_floor_rx).await});

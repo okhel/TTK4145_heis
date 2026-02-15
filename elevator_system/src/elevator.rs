@@ -8,7 +8,7 @@ use elevio::poll::CallButton as CallButton;
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc};
 use crate::order_management::Order;
 
-use std::{io::*, time::*, sync::{Arc, Mutex}};
+use std::{io::*, time::*, sync::{Arc, Mutex}, collections::HashMap};
 
 
 pub const NUM_FLOORS: u8 = 4;
@@ -26,7 +26,8 @@ pub struct Elevator {
     elev_state: Mutex<ElevState>,
     door_state: bool,
     pub last_floor: Mutex<Option<u8>>,
-    id: usize,
+    master_slave_state: Mutex<bool>,
+    id: u8,
 }
 
 impl Elevator {
@@ -37,7 +38,8 @@ impl Elevator {
             elev_state: Mutex::new(ElevState::Stationary),
             door_state: false,
             last_floor: Mutex::new(None),
-            id: id as usize,
+            master_slave_state: Mutex::new(false),
+            id: id,
         };
 
         Ok(elevator)
@@ -47,7 +49,7 @@ impl Elevator {
 
 
 
-pub async fn elevator_runner(id: u8, floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<CallButton>, floor_cmd_rx: URx<CallButton>, elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>, floor_msg_light_rx: URx<(Order, bool)>, at_floor_tx: UTx<u8>) -> Result<()> {
+pub async fn elevator_runner(id: u8, floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<CallButton>, floor_cmd_rx: URx<CallButton>, elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>, floor_msg_light_rx: URx<(Order, bool)>, at_floor_tx: UTx<u8>, elevs_alive_rx: URx<Vec<u8>>) -> Result<()> {
 
     // Initialize elevator
     let my_elev = Arc::new(Elevator::init(id).await?);
@@ -93,8 +95,14 @@ pub async fn elevator_runner(id: u8, floor_order_tx: UTx<CallButton>, floor_msg_
             elev.set_lights(floor_msg_light_rx).await;
         }
     });
+    let master_slave_control_task = tokio::spawn({
+        let elev = Arc::clone(&my_elev);
+        async move {
+            elev.master_slave_control(elevs_alive_rx).await;
+        }
+    });
 
-    let _ = tokio::join!(motor_control_task, io_sensing_task, io_light_task);
+    let _ = tokio::join!(motor_control_task, io_sensing_task, io_light_task, master_slave_control_task);
     Ok(())
 
 }

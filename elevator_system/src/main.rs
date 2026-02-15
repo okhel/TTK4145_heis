@@ -1,6 +1,6 @@
-use std::{io, env};
+use std::{io, env, collections::HashMap};
 use serde::Serialize;
-use tokio::sync::mpsc::unbounded_channel as uc;
+use tokio::{sync::mpsc::unbounded_channel as uc, time};
 use elevator::elevio::poll::CallButton as CallButton;
 use order_management::Order as Order;
 
@@ -30,14 +30,14 @@ async fn main() -> io::Result<()> {
     let (elev_resp_tx, elev_resp_rx) = uc::<u8>(); // Elevator sends responses to order management
     let (floor_msg_light_tx, floor_msg_light_rx) = uc::<(Order, bool)>(); // Elevator sends floor messages to light handling task
     let (at_floor_tx, at_floor_rx) = uc::<u8>();
-    let (udp_received_tx, udp_received_rx) = uc::<u8>();
+    let (elevs_alive_tx, elevs_alive_rx) = uc::<Vec<u8>>();
 
     let order_management_task = tokio::spawn(async move {
         order_management::order_management_runner(floor_order_rx, floor_msg_rx, floor_cmd_tx, elev_req_tx, elev_resp_rx, floor_msg_light_tx).await});
     let elevator_runner_task = tokio::spawn(async move {
-        elevator::elevator_runner(id, floor_order_tx, floor_msg_tx, floor_cmd_rx, elev_req_rx, elev_resp_tx, floor_msg_light_rx, at_floor_tx).await });
+        elevator::elevator_runner(id, floor_order_tx, floor_msg_tx, floor_cmd_rx, elev_req_rx, elev_resp_tx, floor_msg_light_rx, at_floor_tx, elevs_alive_rx).await });
     let network_runner_task = tokio::spawn(async move {
-        networking::network_runner(at_floor_rx, id, ids).await;
+        networking::network_runner(elevs_alive_tx, at_floor_rx, id, ids).await;
     });
 
     let _ = tokio::join!(order_management_task, elevator_runner_task, network_runner_task);
