@@ -53,7 +53,6 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
 
     let motor_control_elevio = my_elev.io.clone();
     let io_sensing_elevio = my_elev.io.clone();
-    let io_light_elevio = my_elev.io.clone();
     let poll_period = Duration::from_millis(25);
 
     // Create channels to elevator IO for motor control task

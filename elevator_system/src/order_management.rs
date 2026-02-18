@@ -2,7 +2,6 @@ use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 use std::collections::{VecDeque, HashMap};
 
 use crate::elevator::elevio::poll::CallButton as CallButton;
-use crate::elevator::NUM_ELEVATORS;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Order {
@@ -16,8 +15,7 @@ pub struct Status {
     pub elev_idx: usize,
 }
 
-const m: u8 = 3; // number of floors
-const n: u8 = NUM_ELEVATORS; // number of elevators
+const M: u8 = 3; // number of floors
 
 pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order>, order_assign_tx: UTx<Order>, mut update_status_rx: URx<Status>, mut order_complete_rx: URx<Order>, order_light_assign_tx: UTx<(Order, bool)>, mut master_notify_rx: URx<()>, mut master_position_rx: URx<u8>) -> std::io::Result<()> {
     
@@ -30,7 +28,7 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
     let master_floor = master_position_rx.recv().await.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Master position channel closed"))?;
     
     println!("Starting order management");
-    let mut orders: VecDeque<Order> = VecDeque::with_capacity(3*m as usize);       // Ring buffer of all orders
+    let mut orders: VecDeque<Order> = VecDeque::with_capacity(3*M as usize);       // Ring buffer of all orders
     let mut positions: HashMap<usize, u8> = HashMap::new();                        // Dictionary of current positions for each elevator
     let mut current_orders: HashMap<usize, Option<Order>> = HashMap::new();       // Dictionary of current order for each elevator
     let mut alive_elevs: Vec<usize> = Vec::new();
@@ -43,7 +41,7 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
     // TODO: Watchdog timer!
 
     // (re)assign orders whenever a new order is received or the status of an elevator changes
-    loop {
+    for _ in 0..100 {
         println!(""); println!("-");
         let busy_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| {
             current_orders.get(&i).and_then(|o| o.as_ref()).is_some()
@@ -154,7 +152,7 @@ fn order_on_the_way(elev_idx: usize, position: u8, curr_order: Order, new_order:
 }
 
 fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &HashMap<usize, u8>,
-    mut current_orders: &mut HashMap<usize, Option<Order>>, alive_elevs: &Vec<usize>) -> Option<usize> {
+    current_orders: &mut HashMap<usize, Option<Order>>, alive_elevs: &Vec<usize>) -> Option<usize> {
 
     // Assign order to elevator if there is no current order OR assign order on the way to the current order    
 
@@ -210,7 +208,7 @@ fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &Has
     println!("Idle candidates: {:?}", idle_candidates);
 
     let mut closest_elev: Option<usize> = None;
-    let mut closest_distance: u8 = m+1;
+    let mut closest_distance: u8 = M+1;
     print!("Closest distance: {}", closest_distance);
 
     for elev_idx in idle_candidates {
@@ -232,7 +230,7 @@ fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &Has
 }
 
 fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
-    mut current_orders: &mut HashMap<usize, Option<Order>>) -> (Option<Order>, Option<Order>) {
+    current_orders: &mut HashMap<usize, Option<Order>>) -> (Option<Order>, Option<Order>) {
 
     let mut order_found: (Option<Order>, Option<Order>) = (None, None);
     let mut eligble_orders: Vec<Order> = Vec::new();

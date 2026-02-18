@@ -187,7 +187,7 @@ pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, c
         if data == SLAVE_ALIVE {
             // Slave Alive received
             // Extract elevator ID from port: port format is 200{id}, so extract id by subtracting 20000
-            let elev_idx = (from.port() - 20000) as usize;
+            // let elev_idx = (from.port() - 20000) as usize;
             // println!("Slave alive at port {}", elev_idx);
             continue;
         }
@@ -252,9 +252,6 @@ pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, c
             NetworkMessage::CallLightAssignment(cb, on) => {
                 // ORDER LIGHT ASSIGNMENT
                 let _ = call_light_assign_tx.send((cb, on));
-            }
-            _ => {
-                println!("Unknown type: {}", typ);
             }
         }
     }
