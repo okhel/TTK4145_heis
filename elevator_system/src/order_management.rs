@@ -50,7 +50,7 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
         }).collect();
         let idle_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| !busy_elevs.contains(&i)).collect();
         println!("Orders: {:?}", orders);
-        println!("Current elevators: {:?}", current_orders);
+        println!("Current orders: {:?}", current_orders);
         println!("Busy elevators: {:?}", busy_elevs);
         println!("Idle elevators: {:?}", idle_elevs);
         
@@ -207,9 +207,11 @@ fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &Has
 
     // Idle elevators - assign the order to the closest elevator (only those that may take this order)
     let idle_candidates: Vec<usize> = idle_elevs.iter().copied().filter(|&i| elevator_may_take_order(i, &order)).collect();
+    println!("Idle candidates: {:?}", idle_candidates);
 
     let mut closest_elev: Option<usize> = None;
-    let mut closest_distance: u8 = m;
+    let mut closest_distance: u8 = m+1;
+    print!("Closest distance: {}", closest_distance);
 
     for elev_idx in idle_candidates {
         if let Some(&position) = positions.get(&elev_idx) {
