@@ -2,7 +2,7 @@ use tokio::{net::{ToSocketAddrs, UdpSocket}, select, time};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use serde::{Serialize, de::DeserializeOwned};
 use std::net::SocketAddr;
-use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
+use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc};
 
 use crate::order_management::{Order as Order, Status as Status};
 use crate::elevator::elevio::poll::CallButton as CallButton;
@@ -26,7 +26,7 @@ pub enum NetworkMessage {
 
 
 pub async fn init_socket(local_id: &String) -> Arc<UdpSocket> {
-    let local_addr = format!("192.168.0.155:280{}", local_id);
+    let local_addr = format!("localhost:{}", local_id);
     let sock = UdpSocket::bind(local_addr).await.unwrap();
     let mysock: Arc<UdpSocket> = Arc::new(sock);
 
@@ -36,7 +36,7 @@ pub async fn init_socket(local_id: &String) -> Arc<UdpSocket> {
 pub async fn ping_alive_sender(send_sock: Arc<UdpSocket>, id: u8, remote_ids: Vec<u8>) {
     loop {
         for remote_id in &remote_ids {
-            let remote_addr = format!("192.168.0.155:280{}", remote_id);
+            let remote_addr = format!("localhost:300{}", remote_id);
             send_sock.send_to(&id.to_be_bytes(), &remote_addr).await.unwrap();
             //println!("Sent id: {} to {}", id, remote_addr);
         }
@@ -81,14 +81,11 @@ pub async fn store_online_elevators(local_id: u8, elevs_alive_tx: UTx<Vec<u8>>, 
                     elevs_alive_tx.send(online_elevators.keys().cloned().collect()).unwrap();
                     println!("Current online elevators: {:?}", online_elevators.keys());
                 }
-                //println!("Online elevators: {:?}", online_elevators.keys())
-//pub async fn ping_slave_alive(send_sock: Arc<UdpSocket>, remote: &String) {
-//    let remote_addr = format!("localhost:200{}", remote);
-//    loop {
-//        send_sock.send_to(SLAVE_ALIVE, &remote_addr).await.unwrap();
-//        time::sleep(Duration::from_millis(1000)).await;
-//    }
-//}
+                println!("Online elevators: {:?}", online_elevators.keys())
+            }
+        }
+    }
+}
 
 
 pub const MAGIC: [u8; 4] = *b"EVL1";       // tag to make sure packet is sent from us, kinda redundant might delete later 
@@ -134,13 +131,6 @@ pub async fn recv_typed_msg(
         let mut buf  = [0; 1024];
         let (n, from) = sock.recv_from(&mut buf).await.expect("udp recv_from failed");
         let data = &buf[..n];
-
-      // TODO: Refactor this
-        // Skip alive pings - they should be handled separately
-        if data == MASTER_ALIVE || data == SLAVE_ALIVE {
-            continue; // Skip and wait for next protocol message
-        }
-       
 
         assert!(data.len() >= 5, "packet too short"); // MAGIC (4) + at least 1 byte payload + type (1)
         assert!(data[..4] == MAGIC, "bad magic");
@@ -206,25 +196,13 @@ pub async fn udp_sender(socket:Arc<UdpSocket>, master_addr: String, slave_addr: 
     }
 }
 
-pub const MAGIC: [u8; 4] = *b"EVL1";       // tag to make sure packet is sent from us, kinda redundant might delete later 
 
-pub async fn network_runner(elevs_alive_tx: UTx<Vec<u8>>, mut at_floor_rx: URx<u8>, local_id: u8, remote_ids: Vec<u8>){
-    let (ping_received_tx, ping_received_rx) = uc::<u8>();
-    let socket = init_socket(&local_id.to_string()).await;
-    let sender_socket = socket.clone();
-    let receiver_socket = socket.clone();
-    
-    let ping_alive_sender_task = tokio::spawn(async move {
-        ping_alive_sender(sender_socket.clone(), local_id, remote_ids).await});
-    let ping_alive_receiver_task = tokio::spawn(async move {
-        ping_alive_receiver(receiver_socket.clone(), ping_received_tx).await});
-    let store_online_elevators_task = tokio::spawn(async move {
-        store_online_elevators(local_id, elevs_alive_tx, ping_received_rx).await});
+// pub async fn network_runner(elevs_alive_tx: UTx<Vec<u8>>, mut at_floor_rx: URx<u8>, local_id: u8, remote_ids: Vec<u8>){
 
 
-    let _ = tokio::join!(ping_alive_sender_task, ping_alive_receiver_task, store_online_elevators_task);
+//     let _ = tokio::join!(ping_alive_sender_task, ping_alive_receiver_task, store_online_elevators_task);
 
-}
+// }
 
 pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, call_assign_tx: UTx<CallButton>, update_status_tx: UTx<Status>, order_complete_tx: UTx<Order>, call_light_assign_tx: UTx<(CallButton, bool)>) {
     loop {
@@ -233,18 +211,6 @@ pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, c
         let (n, from) = socket.recv_from(&mut buf).await.expect("udp recv_from failed");
         let data = &buf[..n];
         
-        // Handle alive pings separately
-        if data == MASTER_ALIVE {
-            // Master Alive received - already handled in network_runner election
-            continue;
-        }
-        if data == SLAVE_ALIVE {
-            // Slave Alive received
-            // Extract elevator ID from port: port format is 200{id}, so extract id by subtracting 20000
-            // let elev_idx = (from.port() - 20000) as usize;
-            // println!("Slave alive at port {}", elev_idx);
-            continue;
-        }
         
         // Not an alive ping - process as protocol message
         // We need to use recv_typed_msg, but it will recv again, so we need a different approach
@@ -313,56 +279,34 @@ pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, c
 
 
 pub async fn network_runner(local: u8, remote: u8, call_request_rx: URx<CallButton>, call_assign_tx: UTx<CallButton>, update_floor_rx: URx<u8>, call_complete_rx: URx<CallButton>, call_light_assign_tx: UTx<(CallButton, bool)>,
-order_request_tx: UTx<Order>, order_assign_rx: URx<Order>, update_status_tx: UTx<Status>, order_complete_tx: UTx<Order>, order_light_assign_rx: URx<(Order, bool)>, master_notify_tx: UTx<()>){
-    let socket = init_socket(&local.to_string()).await;
+order_request_tx: UTx<Order>, order_assign_rx: URx<Order>, update_status_tx: UTx<Status>, order_complete_tx: UTx<Order>, order_light_assign_rx: URx<(Order, bool)>, elevs_alive_tx: UTx<Vec<u8>>, mut master_notify_rx: URx<Vec<u8>>) {
+    
+
+    let (ping_received_tx, ping_received_rx) = uc::<u8>();
+    let ping_socket = init_socket(&format!("300{}", local)).await;
+    let sender_ping_socket = ping_socket.clone();
+    let receiver_ping_socket = ping_socket.clone();
+    
+    let ping_alive_sender_task = tokio::spawn(async move {
+        ping_alive_sender(sender_ping_socket.clone(), local, vec![remote]).await});
+        let ping_alive_receiver_task = tokio::spawn(async move {
+            ping_alive_receiver(receiver_ping_socket.clone(), ping_received_tx).await});
+            let store_online_elevators_task = tokio::spawn(async move {
+                store_online_elevators(local, elevs_alive_tx, ping_received_rx).await});
+                
+    let socket = init_socket(&format!("200{}", local)).await;
     let sender_socket = socket.clone();
     let receiver_socket = socket.clone();
 
-    // Listen for "Master Alive" for 3 seconds (don't ping anything during this time)
-    let deadline = time::Instant::now() + Duration::from_secs(3);
-    let mut buf = [0; 1024];
-    let received_master_alive = loop {
-        let remaining = deadline.saturating_duration_since(time::Instant::now());
-        if remaining.is_zero() {
-            break false; // Timeout - no Master Alive received
-        }
-        
-        match time::timeout(remaining, receiver_socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, _))) => {
-                let data = &buf[..n];
-                if data == MASTER_ALIVE {
-                    break true;
-                }
-                // Continue listening if it's not Master Alive (could be SLAVE_ALIVE)
-            }
-            Ok(Err(_)) => {
-                // Receive error, continue trying until deadline
-                continue;
-            }
-            Err(_) => {
-                break false; // Timeout
-            }
-        }
-    };
-
-    let is_master = !received_master_alive;
-    let ping_alive_task = if is_master {
-        println!("I'm master - no Master Alive received within 3 seconds");
-        // Notify order management that this elevator is master
-        let _ = master_notify_tx.send(());
-        let ping_socket = sender_socket.clone();
-        Some(tokio::spawn(async move {
-            ping_master_alive(ping_socket, &remote.to_string()).await;
-        }))
-    } else {
-        println!("I'm slave - received Master Alive, starting to ping Slave Alive");
-        let ping_socket = sender_socket.clone();
-        Some(tokio::spawn(async move {
-            ping_slave_alive(ping_socket, &remote.to_string()).await;
-        }))
-    };
 
     let udp_sender_task = tokio::spawn(async move {
+        let is_master;
+        let alive_ids = master_notify_rx.recv().await.unwrap();
+            if alive_ids.iter().all(|&id| local <= id) {
+                is_master = true;
+                } else {
+                    is_master = false;
+                }
         // "local" for master (sends to itself), "remote" for slave (sends to master)
         let master_addr = if is_master {
             format!("localhost:200{}", local)
@@ -378,10 +322,5 @@ order_request_tx: UTx<Order>, order_assign_rx: URx<Order>, update_status_tx: UTx
     let udp_receiver_task = tokio::spawn(async move {
         udp_receiver(receiver_socket, order_request_tx, call_assign_tx, update_status_tx, order_complete_tx, call_light_assign_tx).await}); 
 
-    if let Some(ping_task) = ping_alive_task {
-        let _ = tokio::join!(udp_sender_task, udp_receiver_task, ping_task);
-    } else {
-        let _ = tokio::join!(udp_sender_task, udp_receiver_task);
-    }
-
+    let _ = tokio::join!(udp_sender_task, udp_receiver_task, ping_alive_sender_task, ping_alive_receiver_task, store_online_elevators_task);
 }

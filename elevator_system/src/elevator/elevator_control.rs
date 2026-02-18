@@ -109,16 +109,13 @@ impl Elevator {
     
     pub async fn set_lights(&self, mut call_light_assign_rx: URx<(CallButton, bool)>) {
         loop {
-            println!("set_lights waiting for message");
-            if let Some((order, on)) = floor_msg_rx.recv().await {
-                //if order.elevator == self.id {
-                    self.io.call_button_light(order.call.floor, order.call.call, on);
-                //}
+            if let Some((cb, on)) = call_light_assign_rx.recv().await {
+                self.io.call_button_light(cb.floor, cb.call, on);
             }
         }
     }
 
-    pub async fn master_slave_control(&self, mut elevs_alive_rx: URx<Vec<u8>>) {
+    pub async fn master_slave_control(&self, mut elevs_alive_rx: URx<Vec<u8>>, master_notify_tx: UTx<Vec<u8>>) {
         let delay = sleep(Duration::from_secs(4));
         tokio::pin!(delay);
         let mut saved_elevs_alive: Vec<u8> = Vec::new();
@@ -143,15 +140,13 @@ impl Elevator {
                 } else {
                     *self.master_slave_state.lock().unwrap() = false;
                 }
-            if let Some((call, on)) = call_light_assign_rx.recv().await {
-                self.io.call_button_light(call.floor, call.call, on);
+                let _ = master_notify_tx.send((saved_elevs_alive.clone()));
+                println!("Master-slave state: {}, at time {}", *self.master_slave_state.lock().unwrap(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+                sleep(Duration::from_secs(1)).await;
             }
-            println!("Master-slave state: {}, at time {}", *self.master_slave_state.lock().unwrap(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-            sleep(Duration::from_secs(1)).await;
         }
     }
 }
-
 
 // ---------- PURE FUNCTIONS ----------
 

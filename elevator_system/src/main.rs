@@ -1,8 +1,6 @@
 use std::{io, env, collections::HashMap};
 use serde::Serialize;
 use tokio::{sync::mpsc::unbounded_channel as uc, time};
-use std::{io, env};
-use tokio::sync::mpsc::unbounded_channel as uc;
 use order_management::{Order as Order, Status as Status};
 use elevator::elevio::poll::CallButton as CallButton;
 
@@ -40,16 +38,18 @@ async fn main() -> io::Result<()> {
     let (order_light_assign_tx, order_light_assign_rx) = uc::<(Order, bool)>();
 
     // Channels for Master Detection and Position
-    let (master_notify_tx, master_notify_rx) = uc::<()>();
+    let (master_notify_tx, master_notify_rx) = uc::<Vec<u8>>();
     let (master_position_tx, master_position_rx) = uc::<u8>();
+    let (elevs_alive_tx, elevs_alive_rx) = uc::<Vec<u8>>();
+
 
     let order_management_task = tokio::spawn(async move {
-        order_management::order_management_runner(id, order_request_rx, order_assign_tx, update_status_rx, order_complete_rx, order_light_assign_tx, master_notify_rx, master_position_rx).await});
+        order_management::order_management_runner(id, order_request_rx, order_assign_tx, update_status_rx, order_complete_rx, order_light_assign_tx, master_position_rx).await});
     let elevator_runner_task = tokio::spawn(async move {
-        elevator::elevator_runner(id, call_request_tx, call_assign_rx, update_floor_tx, call_complete_tx, call_light_assign_rx, master_position_tx).await });
+        elevator::elevator_runner(id, call_request_tx, call_assign_rx, update_floor_tx, call_complete_tx, call_light_assign_rx, master_position_tx, master_notify_tx, elevs_alive_rx).await });
     let network_runner_task = tokio::spawn(async move {
         networking::network_runner(id, remote_id, call_request_rx, call_assign_tx, update_floor_rx, call_complete_rx, call_light_assign_tx,
-        order_request_tx, order_assign_rx, update_status_tx, order_complete_tx, order_light_assign_rx, master_notify_tx).await;  
+        order_request_tx, order_assign_rx, update_status_tx, order_complete_tx, order_light_assign_rx, elevs_alive_tx, master_notify_rx).await;  
     });
 
     let _ = tokio::join!(order_management_task, elevator_runner_task, network_runner_task);

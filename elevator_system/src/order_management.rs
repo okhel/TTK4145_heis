@@ -17,11 +17,11 @@ pub struct Status {
 
 const M: u8 = 3; // number of floors
 
-pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order>, order_assign_tx: UTx<Order>, mut update_status_rx: URx<Status>, mut order_complete_rx: URx<Order>, order_light_assign_tx: UTx<(Order, bool)>, mut master_notify_rx: URx<()>, mut master_position_rx: URx<u8>) -> std::io::Result<()> {
+pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order>, order_assign_tx: UTx<Order>, mut update_status_rx: URx<Status>, mut order_complete_rx: URx<Order>, order_light_assign_tx: UTx<(Order, bool)>, mut master_position_rx: URx<u8>) -> std::io::Result<()> {
     
-    println!("Waiting for master notification...");
-    // Wait for master notification before starting
-    master_notify_rx.recv().await.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Master notification channel closed"))?;
+    // println!("Waiting for master notification...");
+    // // Wait for master notification before starting
+    // master_notify_rx.recv().await.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Master notification channel closed"))?;
     
     println!("Waiting for master position...");
     // Wait for master position before starting
