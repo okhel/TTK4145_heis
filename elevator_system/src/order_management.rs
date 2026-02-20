@@ -78,15 +78,16 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
 
 
                 // ---------- FIND NEXT ORDER ----------
+                let elev_idx = order.elev_idx;
                 let (next_order, clear_call) = assign_next_order(order.clone(), &mut orders, &mut current_orders);
                 if next_order.is_some() {
-                    let _ = order_assign_tx.send(Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: next_order.as_ref().unwrap().elev_idx });
+                    let _ = order_assign_tx.send(Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: elev_idx });
                 }
                 else {
                     println!("Failed to assign next order");
                 }
                 if clear_call.is_some() {
-                    orders.retain(|item| item != &clear_call.as_ref().unwrap().clone());
+                    orders.retain(|item| item.cb != clear_call.as_ref().unwrap().cb);
                     let _ = order_light_assign_tx.send((clear_call.unwrap().clone(), false));
                 }
             }
@@ -157,12 +158,13 @@ fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
             }
 
             // Pick first order in the queue
-            match should_change_direction(orders.front().cloned(), completed_order.cb.floor, 0) {
+            match should_change_direction(eligble_orders.first().cloned(), completed_order.cb.floor, 0) {
                 Some(true) => {
                     order_found.0 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
                 }
                 Some(false) => {
-                    order_found.0 = Some(orders.front().cloned().unwrap());
+                    let order = eligble_orders.first().cloned().unwrap();
+                    order_found.0 = Some(order);
                     order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
                 }
                 None => ()
@@ -178,21 +180,21 @@ fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
             }
             
             // Pick first order in the queue
-            match should_change_direction(orders.front().cloned(), completed_order.cb.floor, 1) {
+            match should_change_direction(eligble_orders.first().cloned(), completed_order.cb.floor, 1) {
                 Some(true) => {
                     order_found.0 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
                 }
                 Some(false) => {
-                    order_found.0 = Some(orders.front().cloned().unwrap());
+                    let order = eligble_orders.first().cloned().unwrap();
+                    order_found.0 = Some(order);
                     order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
                 }
                 None => ()
             };
         }
         _ => 'Cab: {
-            
-            // Pick first order in the queue
-            if let Some(order) = orders.front().cloned() {
+            // Pick first eligible order in the queue (cab orders must be for this elevator)
+            if let Some(order) = eligble_orders.first().cloned() {
                 order_found.0 = Some(order);
                 if order_found.0.as_ref().unwrap().cb.floor > completed_order.cb.floor {
                     order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
@@ -207,9 +209,10 @@ fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
 
     // See if there are any orders on the way to selected order
     if order_found.0.is_some() {
+        let elev_idx = completed_order.elev_idx;
         let order = find_otw_for_elev(order_found.0.as_ref().unwrap().clone(), eligble_orders.clone(), completed_order);
         orders.retain(|item| item != order_found.0.as_ref().unwrap());
-        current_orders.insert(order_found.0.as_ref().unwrap().elev_idx, Some(order));
+        current_orders.insert(elev_idx, Some(order));
     }
     return (order_found.0, order_found.1);
 
