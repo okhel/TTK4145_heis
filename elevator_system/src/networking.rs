@@ -79,9 +79,9 @@ pub async fn store_online_elevators(local_id: u8, elevs_alive_tx: UTx<Vec<u8>>, 
                 });
                 if online_elevators.len() != before_len {
                     elevs_alive_tx.send(online_elevators.keys().cloned().collect()).unwrap();
-                    println!("Current online elevators: {:?}", online_elevators.keys());
+                    // println!("Current online elevators: {:?}", online_elevators.keys());
                 }
-                println!("Online elevators: {:?}", online_elevators.keys())
+                // println!("Online elevators: {:?}", online_elevators.keys())
             }
         }
     }

@@ -83,6 +83,7 @@ impl Elevator {
 
                             // TODO: Wait 3 seconds, open doors stuff, THEN send order complete message
                             sleep(Duration::from_secs(3)).await;
+                            println!("Sending order complete message for {:?}", target_call);
                             let _ = call_complete_tx.send(target_call.clone());
                         }
                     }

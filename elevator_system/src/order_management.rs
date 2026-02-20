@@ -21,7 +21,6 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
     
     // println!("Waiting for master notification...");
     // // Wait for master notification before starting
-    // master_notify_rx.recv().await.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Master notification channel closed"))?;
     
     println!("Waiting for master position...");
     // Wait for master position before starting
@@ -43,14 +42,8 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
     // (re)assign orders whenever a new order is received or the status of an elevator changes
     for _ in 0..100 {
         println!(""); println!("-");
-        let busy_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| {
-            current_orders.get(&i).and_then(|o| o.as_ref()).is_some()
-        }).collect();
-        let idle_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| !busy_elevs.contains(&i)).collect();
         println!("Orders: {:?}", orders);
         println!("Current orders: {:?}", current_orders);
-        println!("Busy elevators: {:?}", busy_elevs);
-        println!("Idle elevators: {:?}", idle_elevs);
         
         tokio::select! { 
             
@@ -71,42 +64,30 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
 
 
                 // ---------- CLEAR ORDER ----------
-                // Remove cab order to current floor and optionally the hall order the elevator is completing
+                // Remove order the elevator is completing, if it is not a cab order
                 if order.cb.call != 2 {
-                    orders.retain(|item| item != &order);
+                    orders.retain(|item| item.cb != order.cb);
                     let _ = order_light_assign_tx.send((order.clone(), false));
                 }
-                orders.retain(|item| item.cb != order.cb);
-                current_orders.insert(order.elev_idx, None);        
-                // TODO: Turn off light
-                let _ = order_light_assign_tx.send((order.clone(), false));
-                println!("Cleared order {:?}. Orders: {:?}", order.cb, orders.clone());
+                // Remove cab order to current floor
+                let cab_order = Order { cb: CallButton { floor: order.cb.floor, call: 2 }, elev_idx: order.elev_idx };
+                orders.retain(|item| item != &cab_order);        
+                let _ = order_light_assign_tx.send((cab_order.clone(), false));
+                current_orders.insert(order.elev_idx, None);
+                println!("Cleared order {:?}. ", order);
 
 
                 // ---------- FIND NEXT ORDER ----------
-                if orders.len() > 0 {
-                    let (next_order, clear_call) = assign_next_order(order.clone(), &mut orders, &mut current_orders);
-                    if clear_call.is_some() {
-                        orders.retain(|item| item != &clear_call.as_ref().unwrap().clone());
-                        let _ = order_light_assign_tx.send((clear_call.unwrap().clone(), false));
-                    }
-
-                    if next_order.is_some() {
-                        let next_order_val = next_order.unwrap();
-                        
-                        // ---------- ATTEMPT TO REORDER QUEUE ----------
-                        // Try to assign the next order using assign_new_orders to see if any working elevator
-                        // can take it on the way, otherwise assign it to the elevator that just completed an order
-                        let new_order_found = assign_new_orders(next_order_val.clone(), &mut orders, &mut positions, &mut current_orders, &alive_elevs);
-                        if let Some(order_elev_idx) = new_order_found {
-                            let _ = order_assign_tx.send(Order { cb: next_order_val.cb.clone(), elev_idx: order_elev_idx});
-                        }
-                        else {
-                            // assign_new_orders didn't assign it, so assign it to the elevator that just completed an order
-                            let _ = order_assign_tx.send(Order { cb: next_order_val.cb.clone(), elev_idx: next_order_val.elev_idx});
-                        }
-                    }
-                    else {println!("Failed to assign next order");}
+                let (next_order, clear_call) = assign_next_order(order.clone(), &mut orders, &mut current_orders);
+                if next_order.is_some() {
+                    let _ = order_assign_tx.send(Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: next_order.as_ref().unwrap().elev_idx });
+                }
+                else {
+                    println!("Failed to assign next order");
+                }
+                if clear_call.is_some() {
+                    orders.retain(|item| item != &clear_call.as_ref().unwrap().clone());
+                    let _ = order_light_assign_tx.send((clear_call.unwrap().clone(), false));
                 }
             }
             Some(status) = update_status_rx.recv() => {
@@ -121,6 +102,119 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
     }
     Ok(())
 }
+
+
+// Assign order to elevator if there is no current order OR assign order on the way to the current order    
+fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &HashMap<usize, u8>,
+    current_orders: &mut HashMap<usize, Option<Order>>, alive_elevs: &Vec<usize>) -> Option<usize> {
+
+    // If the order already exists in the queue, return None
+    if orders.iter().any(|o| o == &order) {
+        return None;
+    }
+
+    *orders = rebuild_queue(orders, order.clone());
+    let (busy_elevs, available_elevs) = designate_busy_idle(alive_elevs.clone(), current_orders, order.clone());
+
+
+    // BUSY ELEVATORS
+    // See if any elevator can take the order on the way
+    if let Some((elev_idx, paused_order)) = find_order_otw(busy_elevs, &order, current_orders, positions){
+        println!("Found order on the way to {:?}", paused_order);
+        orders.push_front(paused_order);
+        orders.retain(|item| item != &order);
+        current_orders.insert(elev_idx, Some(order));
+        return Some(elev_idx);
+    }
+
+    // AVAILABLE ELEVATORS
+    // Assign the order to the closest elevator
+    let closest_elev = find_closest_elev(available_elevs, &order, positions);
+
+    // Assign order to closest elevator, if any
+    if let Some(elev_idx) = closest_elev {
+        current_orders.insert(elev_idx, Some(order.clone()));
+        orders.retain(|item| item != &order);
+        return Some(elev_idx);
+    }
+    None
+
+}
+
+fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
+    current_orders: &mut HashMap<usize, Option<Order>>) -> (Option<Order>, Option<Order>) {
+
+    let mut order_found: (Option<Order>, Option<Order>) = (None, None);
+    let eligble_orders = get_eligible_orders(orders, completed_order.clone());
+
+    match completed_order.cb.call {
+        0 => 'HallUp: {
+
+            // Find closest cab order above
+            if let Some(cab_order) = find_cab_order(eligble_orders.clone(), completed_order.cb.floor, 0) {
+                order_found.0 = Some(cab_order);
+                break 'HallUp;
+            }
+
+            // Pick first order in the queue
+            match should_change_direction(orders.front().cloned(), completed_order.cb.floor, 0) {
+                Some(true) => {
+                    order_found.0 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
+                }
+                Some(false) => {
+                    order_found.0 = Some(orders.front().cloned().unwrap());
+                    order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
+                }
+                None => ()
+            };
+
+        }
+        1 => 'HallDown: {
+
+            // Find closest cab order below
+            if let Some(cab_order) = find_cab_order(eligble_orders.clone(), completed_order.cb.floor, 1) {
+                order_found.0 = Some(cab_order);
+                break 'HallDown;
+            }
+            
+            // Pick first order in the queue
+            match should_change_direction(orders.front().cloned(), completed_order.cb.floor, 1) {
+                Some(true) => {
+                    order_found.0 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
+                }
+                Some(false) => {
+                    order_found.0 = Some(orders.front().cloned().unwrap());
+                    order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
+                }
+                None => ()
+            };
+        }
+        _ => 'Cab: {
+            
+            // Pick first order in the queue
+            if let Some(order) = orders.front().cloned() {
+                order_found.0 = Some(order);
+                if order_found.0.as_ref().unwrap().cb.floor > completed_order.cb.floor {
+                    order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
+                }
+                else if order_found.0.as_ref().unwrap().cb.floor < completed_order.cb.floor {
+                    order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
+                }
+            }
+            
+        }
+    }
+
+    // See if there are any orders on the way to selected order
+    if order_found.0.is_some() {
+        let order = find_otw_for_elev(order_found.0.as_ref().unwrap().clone(), eligble_orders.clone(), completed_order);
+        orders.retain(|item| item != order_found.0.as_ref().unwrap());
+        current_orders.insert(order_found.0.as_ref().unwrap().elev_idx, Some(order));
+    }
+    return (order_found.0, order_found.1);
+
+}
+
 
 
 // ---------- PURE FUNCTIONS ----------
@@ -151,12 +245,50 @@ fn order_on_the_way(elev_idx: usize, position: u8, curr_order: Order, new_order:
     || (is_above && on_way_above && elevator_may_take_order(elev_idx, &new_order))
 }
 
-fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &HashMap<usize, u8>,
-    current_orders: &mut HashMap<usize, Option<Order>>, alive_elevs: &Vec<usize>) -> Option<usize> {
+fn find_closest_elev(elev_candidates: Vec<usize>, order: &Order, positions: &HashMap<usize, u8>) -> Option<usize> {
+    let mut closest_elev: Option<usize> = None;
+    let mut closest_distance: u8 = M+1;
+    print!("Closest distance: {}", closest_distance);
 
-    // Assign order to elevator if there is no current order OR assign order on the way to the current order    
+    for elev_idx in elev_candidates {
+        if let Some(&position) = positions.get(&elev_idx) {
+            let new_closest_distance = u8::abs_diff(position, order.cb.floor);
+            if new_closest_distance < closest_distance {
+                closest_distance = new_closest_distance;
+                closest_elev = Some(elev_idx);
+            }
+        }
+    }
 
-    // Rebuild the queue with cab orders at the front
+    return closest_elev;
+}
+
+fn find_order_otw(busy_elevs: Vec<usize>, order: &Order, current_orders: &HashMap<usize, Option<Order>>, positions: &HashMap<usize, u8>) -> Option<(usize, Order)> {
+
+    for elev_idx in busy_elevs {
+        if let Some(Some(curr_order)) = current_orders.get(&elev_idx).cloned() {
+            if let Some(&position) = positions.get(&elev_idx) {
+                if order_on_the_way(elev_idx, position, curr_order.clone(), order.clone()) {
+                    return Some((elev_idx, curr_order));
+                }
+            }
+        }
+    }
+    return None;
+}
+
+// Designate busy and idle elevators, based on being able to take current order
+fn designate_busy_idle(alive_elevs: Vec<usize>, current_orders: &HashMap<usize, Option<Order>>, order: Order) -> (Vec<usize>, Vec<usize>) {
+    let busy_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| {
+        current_orders.get(&i).and_then(|o| o.as_ref()).is_some()
+    }).collect();
+    let free_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| !busy_elevs.contains(&i)).collect();
+    let idle_elevs: Vec<usize> = free_elevs.iter().copied().filter(|&i| elevator_may_take_order(i, &order)).collect();
+    return (busy_elevs, idle_elevs);
+}
+
+// Rebuild the queue with cab orders at the front, add new order to the back
+fn rebuild_queue(orders: &mut VecDeque<Order>, order: Order) -> VecDeque<Order> {
     let mut cab_orders: VecDeque<Order> = VecDeque::with_capacity(orders.len());
     let mut other_orders: VecDeque<Order> = VecDeque::with_capacity(orders.len());
     for order in orders.iter() {
@@ -166,151 +298,63 @@ fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &Has
             other_orders.push_back(order.clone());
         }
     }
-    orders.clear();
-    orders.extend(cab_orders);
-    orders.extend(other_orders);
-
-    // If the order already exists in the queue, return None
-    if orders.iter().any(|o| o == &order) {
-        return None;
-    }
-    // Add the new order to the queue
-    orders.push_back(order.clone());
-
-    // Designate busy and idle elevators
-    let busy_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| {
-        current_orders.get(&i).and_then(|o| o.as_ref()).is_some()
-    }).collect();
-    let idle_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| !busy_elevs.contains(&i)).collect();
-    println!("Busy elevators: {:?}", busy_elevs);
-    println!("Idle elevators: {:?}", idle_elevs);
-
-
-    // Busy elevators - see if any elevator can take an order on the way
-    for elev_idx in busy_elevs {
-        if let Some(Some(curr_order)) = current_orders.get(&elev_idx).cloned() {
-            if let Some(&position) = positions.get(&elev_idx) {
-                if order_on_the_way(elev_idx, position, curr_order.clone(), order.clone()) {
-                    println!("Order {:?} is on the way for elevator {} (at floor {}, going to {:?})", 
-                             order.cb, elev_idx, position, curr_order.cb);
-                    // Push demoted order to the front of the queue and remove the promoted order from the queue to avoid duplicates.
-                    orders.push_front(curr_order);
-                    orders.retain(|item| item != &order);
-                    current_orders.insert(elev_idx, Some(order));
-                    return Some(elev_idx);
-                }
-            }
-        }
-    }
-
-    // Idle elevators - assign the order to the closest elevator (only those that may take this order)
-    let idle_candidates: Vec<usize> = idle_elevs.iter().copied().filter(|&i| elevator_may_take_order(i, &order)).collect();
-    println!("Idle candidates: {:?}", idle_candidates);
-
-    let mut closest_elev: Option<usize> = None;
-    let mut closest_distance: u8 = M+1;
-    print!("Closest distance: {}", closest_distance);
-
-    for elev_idx in idle_candidates {
-        if let Some(&position) = positions.get(&elev_idx) {
-            let new_closest_distance = u8::abs_diff(position, order.clone().cb.floor);
-            if new_closest_distance < closest_distance {
-                closest_distance = new_closest_distance;
-                closest_elev = Some(elev_idx);
-            }
-        }
-    }
-    if let Some(elev_idx) = closest_elev {
-        current_orders.insert(elev_idx, Some(order.clone()));
-        orders.retain(|item| item != &order);
-        return Some(elev_idx);
-    }
-    None
-
+    let mut new_orders: VecDeque<Order> = VecDeque::with_capacity(orders.len());
+    new_orders.extend(cab_orders);
+    new_orders.extend(other_orders);
+    new_orders.push_back(order.clone());
+    return new_orders;
 }
 
-fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
-    current_orders: &mut HashMap<usize, Option<Order>>) -> (Option<Order>, Option<Order>) {
-
-    let mut order_found: (Option<Order>, Option<Order>) = (None, None);
+fn get_eligible_orders(orders: &VecDeque<Order>, completed_order: Order) -> Vec<Order> {
     let mut eligble_orders: Vec<Order> = Vec::new();
 
     // Find orders that the elevator that just completed an order may take
-    // TODO: check that all these orders are eligible
     for order in orders.iter() {
         if elevator_may_take_order(completed_order.elev_idx, order) {
             eligble_orders.push(order.clone());
         }
     }
+    return eligble_orders;
+}
 
-    match completed_order.cb.call {
-        0 => 'HallUp: {
-            // Try to assign order above in the same direction, else just assign something
-
-            // Hall up or cab order call above
-            for order in eligble_orders.iter() {
-                if (order.cb.floor > completed_order.cb.floor) && (order.cb.call != 1){
-                    order_found.0 = Some(order.clone());
-                    break 'HallUp;
-                }
-            }
-            // Hall down call above
-            for order in eligble_orders.iter() {
-                if order.cb.floor > completed_order.cb.floor && completed_order.cb.call == 1 {
-                    order_found.0 = Some(order.clone());
-                    break 'HallUp;
-                }
-            }
-
-            // No order above, clear hall up order
-            order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
-            // Changing direction, assign hall up order at the current floor (see spec)
-            order_found.0 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
-            println!("Changing direction");
-        }
-        1 => 'HallDown: {
-            // Try to assign order below in the same direction, else just assign something
-
-            // Hall down or cab order call below
-            for order in eligble_orders.iter() {
-                if (order.cb.floor < completed_order.cb.floor) && (order.cb.call != 0) {
-                    order_found.0 = Some(order.clone());
-                    break 'HallDown;
-                }
-            }
-            // Hall up call below
-            for order in eligble_orders.iter() {
-                if order.cb.floor < completed_order.cb.floor && order.cb.call == 0 {
-                    order_found.0 = Some(order.clone());
-                    break 'HallDown;
-                }
-            }
-
-            // No order below, clear hall down order
-            order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
-            // Changing direction, assign hall down order at the current floor (see spec)
-            order_found.0 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
-            println!("Changing direction");
-        }
-        _ => 'Cab: {
-            // Pick the first order, see if there are any hall orders at the current floor, in the direction of the first order
-            
-            order_found.0 = Some(orders.pop_front().unwrap());
-            
-            // If the order is above, clear hall up order
-            if completed_order.cb.floor < order_found.0.as_ref().unwrap().cb.floor{
-                order_found.1 = Some(Order { cb: CallButton{floor: completed_order.cb.floor, call: 0}, elev_idx: completed_order.elev_idx})}
-            // If the order is below, clear hall down order
-            else if completed_order.cb.floor > order_found.0.as_ref().unwrap().cb.floor{
-                order_found.1 = Some(Order { cb: CallButton{floor: completed_order.cb.floor, call: 1}, elev_idx: completed_order.elev_idx})} // Hall down
-
-            break 'Cab;
+// Find the closest cab order in the direction of the current order
+fn find_cab_order(orders: Vec<Order>, floor: u8, dir: u8) -> Option<Order> {
+    for order in orders.iter() {
+        match dir {
+            0 => if (order.cb.floor > floor) && (order.cb.call == 2) {return Some(order.clone());}
+            1 => if (order.cb.floor < floor) && (order.cb.call == 2) {return Some(order.clone());}
+            _ => return None
         }
     }
+    return None;
+}
 
-    // Store the next order for the elevator that completed the previous order
-    current_orders.insert(completed_order.elev_idx, order_found.0.clone());
-    orders.retain(|item| item != order_found.0.as_ref().unwrap());
-    return (order_found.0, order_found.1);
+fn find_otw_for_elev(order: Order, eligble_orders: Vec<Order>, completed_order: Order) -> Order {
+    let mut closest_order: Order = order.clone();
+    let mut closest_distance: u8 = M+1;
+
+    for eligble_order in eligble_orders.iter() {
+        if order_on_the_way(completed_order.elev_idx, completed_order.cb.floor, order.clone(), eligble_order.clone()) {
+            let new_closest_distance = u8::abs_diff(eligble_order.cb.floor, order.cb.floor);
+            if new_closest_distance < closest_distance {
+                closest_distance = new_closest_distance;
+                closest_order = eligble_order.clone();
+            }
+        }
+    }
+    return closest_order;
+}
+
+
+fn should_change_direction(order: Option<Order>, floor: u8, dir: u8) -> Option<bool> {
+    if let Some(order) = order {
+        match dir {
+            0 => if order.cb.floor < floor {return Some(true);}
+            1 => if order.cb.floor > floor {return Some(true);}
+            _ => ()
+        }
+        return Some(false);
+    }
+    return None;
 
 }
