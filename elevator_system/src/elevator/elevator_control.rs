@@ -80,9 +80,13 @@ impl Elevator {
                             direction = Some(elevio::elev::DIRN_STOP);
                             self.io.motor_direction(elevio::elev::DIRN_STOP);
                             *self.elev_state.lock().unwrap() = crate::elevator::ElevState::Stationary;
+                            self.io.door_light(true);
 
-                            // TODO: Wait 3 seconds, open doors stuff, THEN send order complete message
                             sleep(Duration::from_secs(3)).await;
+                            while *self.obstruction_state.lock().unwrap() {
+                                sleep(Duration::from_millis(100)).await;
+                            }
+                            self.io.door_light(false);
                             println!("Sending order complete message for {:?}", target_call);
                             let _ = call_complete_tx.send(target_call.clone());
                         }
@@ -96,12 +100,17 @@ impl Elevator {
         }
     }
 
-    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, call_request_tx: UTx<CallButton>) {
+    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, mut obstruction_rx: URx<bool>, call_request_tx: UTx<CallButton>) {
         loop {
             tokio::select! {
                 
                 Some(call) = call_rx.recv() => {
                     let _ = call_request_tx.send(call);
+                }
+
+                Some(_) = obstruction_rx.recv() => {
+                    let mut obs = self.obstruction_state.lock().unwrap();
+                    *obs = !*obs;
                 }
 
             }

@@ -24,7 +24,7 @@ enum ElevState {
 pub struct Elevator {
     io: Elevio,
     elev_state: Mutex<ElevState>,
-    door_state: bool,
+    obstruction_state: Mutex<bool>,
     pub last_floor: Mutex<Option<u8>>,
     master_slave_state: Mutex<bool>,
     id: u8,
@@ -36,7 +36,7 @@ impl Elevator {
         let elevator = Self {
             io: Elevio::init(&format!("localhost:{}",id), NUM_FLOORS)?,
             elev_state: Mutex::new(ElevState::Stationary),
-            door_state: false,
+            obstruction_state: Mutex::new(false),
             last_floor: Mutex::new(None),
             master_slave_state: Mutex::new(false),
             id: id,
@@ -56,7 +56,8 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
     let my_elev = Arc::new(Elevator::init(port).await?);
 
     let motor_control_elevio = my_elev.io.clone();
-    let io_sensing_elevio = my_elev.io.clone();
+    let call_sensing_elevio = my_elev.io.clone();
+    let obstruction_elevio = my_elev.io.clone();
     let poll_period = Duration::from_millis(25);
 
     // Create channels to elevator IO for motor control task
@@ -68,10 +69,17 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
 
     // Create channels to elevator IO for io sensing task
     let (call_button_tx, call_button_rx) = uc::<elevio::poll::CallButton>();{
-        let elevator = io_sensing_elevio.clone();
+        let elevator = call_sensing_elevio.clone();
         tokio::spawn(async move {
             elevio::poll::call_buttons(elevator, call_button_tx, poll_period).await;
         });}
+    
+    let (obstruction_tx, obstruction_rx) = uc::<bool>();{
+        let elevator = obstruction_elevio.clone();
+        tokio::spawn(async move {
+            elevio::poll::obstruction(elevator, obstruction_tx, poll_period).await;
+        });
+    }
 
     
     // Start tasks
@@ -85,7 +93,7 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
     let io_sensing_task = tokio::spawn({
         let elev = Arc::clone(&my_elev);
         async move {
-            elev.io_sensing(call_button_rx, call_request_tx).await;
+            elev.io_sensing(call_button_rx, obstruction_rx, call_request_tx).await;
         }
     });
 
