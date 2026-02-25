@@ -12,6 +12,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "elevator_system"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -80,15 +89,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "single_elevator"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "serde",
- "tokio",
 ]
 
 [[package]]
