@@ -50,7 +50,7 @@ impl Elevator {
 
 
 //pub async fn elevator_runner(id: u8, floor_order_tx: UTx<CallButton>, floor_msg_tx: UTx<CallButton>, floor_cmd_rx: URx<CallButton>, elev_req_rx: URx<bool>, elev_resp_tx: UTx<u8>, floor_msg_light_rx: URx<(Order, bool)>, at_floor_tx: UTx<u8>, elevs_alive_rx: URx<Vec<u8>>) -> Result<()> {
-pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, call_light_assign_rx: URx<(CallButton, bool)>, master_position_tx: UTx<u8>, master_notify_tx: UTx<Vec<u8>>, elevs_alive_rx: URx<Vec<u8>>) -> Result<()> {
+pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, call_light_assign_rx: URx<(CallButton, bool)>, master_position_tx: UTx<u8>, master_notify_tx: UTx<Vec<u8>>) -> Result<()> {
 
     // Initialize elevator
     let my_elev = Arc::new(Elevator::init(port).await?);
@@ -95,14 +95,14 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
             elev.set_lights(call_light_assign_rx).await;
         }
     });
-    let master_slave_control_task = tokio::spawn({
-        let elev = Arc::clone(&my_elev);
-        async move {
-            elev.master_slave_control(elevs_alive_rx, master_notify_tx).await;
-        }
-    });
+    // let master_slave_control_task = tokio::spawn({
+    //     let elev = Arc::clone(&my_elev);
+    //     async move {
+    //         elev.master_slave_control(elevs_alive_rx, master_notify_tx).await;
+    //     }
+    // });
 
-    let _ = tokio::join!(motor_control_task, io_sensing_task, io_light_task, master_slave_control_task);
+    let _ = tokio::join!(motor_control_task, io_sensing_task, io_light_task);
     Ok(())
 
 }

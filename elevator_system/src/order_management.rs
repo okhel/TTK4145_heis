@@ -22,9 +22,7 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
     // println!("Waiting for master notification...");
     // // Wait for master notification before starting
     
-    println!("Waiting for master position...");
     // Wait for master position before starting
-    let master_floor = master_position_rx.recv().await.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Master position channel closed"))?;
     
     println!("Starting order management");
     let mut orders: VecDeque<Order> = VecDeque::with_capacity(3*M as usize);       // Ring buffer of all orders
@@ -33,9 +31,6 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
     let mut alive_elevs: Vec<usize> = Vec::new();
 
     // Start by adding the master elevator to the list of alive elevators and positions
-    positions.insert(master as usize, master_floor);
-    alive_elevs.push(master as usize);
-    println!("Alive elevators: {:?}", alive_elevs);
 
     // TODO: Watchdog timer!
 

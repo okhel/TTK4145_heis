@@ -14,13 +14,12 @@ pub mod process;
 
 async fn main() -> io::Result<()> {
 
-    let id: u8 = env::args().last().unwrap().parse().unwrap();
-    let mut ids = vec![19, 20];
+    let local_id: u8 = env::args().last().unwrap().parse().unwrap();
+    let mut ids = vec![19, 20, 21];
 
-    ids.retain(|x| *x !=id);
-    let remote_id = ids[0];
-    println!("I'm {}", id);
-    println!("Connecting to {}", remote_id);
+    ids.retain(|x| *x !=local_id);
+    let remote_ids = ids;
+    println!("I'm {}", local_id);
 
 
     // Channels for Elevator <-> Network
@@ -44,12 +43,12 @@ async fn main() -> io::Result<()> {
 
 
     let order_management_task = tokio::spawn(async move {
-        order_management::order_management_runner(id, order_request_rx, order_assign_tx, update_status_rx, order_complete_rx, order_light_assign_tx, master_position_rx).await});
+        order_management::order_management_runner(local_id, order_request_rx, order_assign_tx, update_status_rx, order_complete_rx, order_light_assign_tx, master_position_rx).await});
     let elevator_runner_task = tokio::spawn(async move {
-        elevator::elevator_runner(id, call_request_tx, call_assign_rx, update_floor_tx, call_complete_tx, call_light_assign_rx, master_position_tx, master_notify_tx, elevs_alive_rx).await });
+        elevator::elevator_runner(local_id, call_request_tx, call_assign_rx, update_floor_tx, call_complete_tx, call_light_assign_rx, master_position_tx, master_notify_tx).await });
     let network_runner_task = tokio::spawn(async move {
-        networking::network_runner(id, remote_id, call_request_rx, call_assign_tx, update_floor_rx, call_complete_rx, call_light_assign_tx,
-        order_request_tx, order_assign_rx, update_status_tx, order_complete_tx, order_light_assign_rx, elevs_alive_tx, master_notify_rx).await;  
+        networking::network_runner(local_id, remote_ids, call_request_rx, call_assign_tx, update_floor_rx, call_complete_rx, call_light_assign_tx,
+        order_request_tx, order_assign_rx, update_status_tx, order_complete_tx, order_light_assign_rx, elevs_alive_tx, master_notify_rx, elevs_alive_rx).await;  
     });
 
     let _ = tokio::join!(order_management_task, elevator_runner_task, network_runner_task);
