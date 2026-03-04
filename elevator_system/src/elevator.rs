@@ -34,7 +34,7 @@ impl Elevator {
     async fn init(id: u8) -> Result<Elevator> {
 
         let elevator = Self {
-            io: Elevio::init(&format!("localhost:{}",id), NUM_FLOORS)?,
+            io: Elevio::init(&format!("localhost:250{}",id), NUM_FLOORS)?,
             elev_state: Mutex::new(ElevState::Stationary),
             obstruction_state: Mutex::new(false),
             last_floor: Mutex::new(None),
