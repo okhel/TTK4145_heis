@@ -51,9 +51,13 @@ impl Elevator {
                         // If there is no change in direction, and direction is stop, send order complete message
                         None => {
                             if direction == Some(elevio::elev::DIRN_STOP) {
-                                // println!("Recieved order to current floor, when stopped");
-                                // TODO: Wait 3 seconds, open doors stuff, THEN send order complete message
+                                self.io.door_light(true);
+
                                 sleep(Duration::from_secs(3)).await;
+                                while *self.obstruction_state.lock().unwrap() {
+                                    sleep(Duration::from_millis(100)).await;
+                                }
+                                self.io.door_light(false);
                                 let _ = call_complete_tx.send(target_call.clone());
                             }
                         },
