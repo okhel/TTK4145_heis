@@ -1,15 +1,13 @@
 use crate::elevator::{Elevator, elevio};
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{sleep, Duration};
 use crate::elevator::elevio::poll::CallButton as CallButton;
-use crate::order_management::Order;
-use std::collections::HashMap;
 
 impl Elevator {
 
     // Go to a floor, cannot be called if not at a floor
-    pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, master_position_tx: UTx<u8>) {
+    pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>) {
 
         // If not at a floor, go to start floor
         match URx::try_recv(&mut floor_sensor_rx) {
@@ -26,11 +24,9 @@ impl Elevator {
                     }
                 }
             }
-        }
-        let master_floor = self.last_floor.lock().unwrap().unwrap();
-        let _ = update_floor_tx.send(master_floor);
-        // Send master position to order management
-        let _ = master_position_tx.send(master_floor);
+        };
+
+        let _ = update_floor_tx.send(self.last_floor.lock().unwrap().unwrap());
         
         let mut direction: Option<u8> = Some(elevio::elev::DIRN_STOP);
         let mut target_call: CallButton = CallButton { floor: 0, call: 0 };

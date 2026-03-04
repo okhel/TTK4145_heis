@@ -17,30 +17,17 @@ pub struct Status {
 
 const M: u8 = 3; // number of floors
 
-pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order>, order_assign_tx: UTx<Order>, mut update_status_rx: URx<Status>, mut order_complete_rx: URx<Order>, order_light_assign_tx: UTx<(Order, bool)>, mut master_position_rx: URx<u8>) -> std::io::Result<()> {
-    
-    // println!("Waiting for master notification...");
-    // // Wait for master notification before starting
-    
-    println!("Waiting for master position...");
-    // Wait for master position before starting
-    let master_floor = master_position_rx.recv().await.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Master position channel closed"))?;
-    
-    println!("Starting order management");
-    let mut orders: VecDeque<Order> = VecDeque::with_capacity(3*M as usize);       // Ring buffer of all orders
-    let mut positions: HashMap<usize, u8> = HashMap::new();                        // Dictionary of current positions for each elevator
-    let mut current_orders: HashMap<usize, Option<Order>> = HashMap::new();       // Dictionary of current order for each elevator
+pub async fn order_management_runner(mut order_request_rx: URx<Order>, order_assign_tx: UTx<Order>, mut update_status_rx: URx<Status>, mut order_complete_rx: URx<Order>, order_light_assign_tx: UTx<(Order, bool)>) {
+        
+    let mut orders: VecDeque<Order> = VecDeque::with_capacity(3*M as usize);        // Ring buffer of all orders
+    let mut positions: HashMap<usize, u8> = HashMap::new();                         // Dictionary of current positions for each elevator
+    let mut current_orders: HashMap<usize, Option<Order>> = HashMap::new();         // Dictionary of current order for each elevator
     let mut alive_elevs: Vec<usize> = Vec::new();
-
-    // Start by adding the master elevator to the list of alive elevators and positions
-    positions.insert(master as usize, master_floor);
-    alive_elevs.push(master as usize);
-    println!("Alive elevators: {:?}", alive_elevs);
 
     // TODO: Watchdog timer!
 
     // (re)assign orders whenever a new order is received or the status of an elevator changes
-    for _ in 0..100 {
+    loop {
         println!(""); println!("-");
         println!("Orders: {:?}", orders);
         println!("Current orders: {:?}", current_orders);
@@ -60,8 +47,6 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
             }
 
             Some(order) = order_complete_rx.recv() => {
-                // println!("Arrived at floor: {}", call.floor);
-
 
                 // ---------- CLEAR ORDER ----------
                 // Remove order the elevator is completing, if it is not a cab order
@@ -101,7 +86,6 @@ pub async fn order_management_runner(master: u8, mut order_request_rx: URx<Order
             }
         }
     }
-    Ok(())
 }
 
 

@@ -289,10 +289,10 @@ order_request_tx: UTx<Order>, order_assign_rx: URx<Order>, update_status_tx: UTx
     
     let ping_alive_sender_task = tokio::spawn(async move {
         ping_alive_sender(sender_ping_socket.clone(), local, vec![remote]).await});
-        let ping_alive_receiver_task = tokio::spawn(async move {
-            ping_alive_receiver(receiver_ping_socket.clone(), ping_received_tx).await});
-            let store_online_elevators_task = tokio::spawn(async move {
-                store_online_elevators(local, elevs_alive_tx, ping_received_rx).await});
+    let ping_alive_receiver_task = tokio::spawn(async move {
+        ping_alive_receiver(receiver_ping_socket.clone(), ping_received_tx).await});
+    let store_online_elevators_task = tokio::spawn(async move {
+        store_online_elevators(local, elevs_alive_tx, ping_received_rx).await});
                 
     let socket = init_socket(&format!("200{}", local)).await;
     let sender_socket = socket.clone();
@@ -304,9 +304,10 @@ order_request_tx: UTx<Order>, order_assign_rx: URx<Order>, update_status_tx: UTx
         let alive_ids = master_notify_rx.recv().await.unwrap();
             if alive_ids.iter().all(|&id| local <= id) {
                 is_master = true;
-                } else {
-                    is_master = false;
-                }
+            }
+            else {
+                is_master = false;
+            }
         // "local" for master (sends to itself), "remote" for slave (sends to master)
         let master_addr = if is_master {
             format!("localhost:200{}", local)
