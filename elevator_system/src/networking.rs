@@ -283,7 +283,7 @@ pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, c
             }
             NetworkMessage::UpdateFloor(floor) => {
                 // UPDATE FLOOR
-                let _ = update_status_tx.send(Status { floor, elev_idx});
+                let _ = update_status_tx.send(Status { floor: Some(floor), elev_idx});
             }
             NetworkMessage::CallComplete(cb) => {
                 // CALL COMPLETE
@@ -321,7 +321,7 @@ order_request_tx: UTx<Order>, order_assign_rx: URx<Order>, update_status_tx: UTx
 
 
     let udp_sender_task = tokio::spawn(async move {
-        let alive_ids = vec![19,20, 21];
+        let alive_ids = vec![19, 20, 21];
         let master_id = *alive_ids.iter().min().expect("alive_ids kan ikke være tom");
         let master_addr = format!("localhost:200{}", master_id);
 
