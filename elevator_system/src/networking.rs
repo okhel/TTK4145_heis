@@ -263,7 +263,7 @@ pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, c
             }
             NetworkMessage::UpdateFloor(floor) => {
                 // UPDATE FLOOR
-                let _ = update_status_tx.send(Status { floor, elev_idx});
+                let _ = update_status_tx.send(Status { floor: Some(floor), elev_idx});
             }
             NetworkMessage::CallComplete(cb) => {
                 // CALL COMPLETE

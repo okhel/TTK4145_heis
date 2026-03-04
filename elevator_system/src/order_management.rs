@@ -11,7 +11,7 @@ pub struct Order {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Status {
-    pub floor: u8,
+    pub floor: Option<u8>,
     pub elev_idx: usize,
 }
 
@@ -77,9 +77,16 @@ pub async fn order_management_runner(mut order_request_rx: URx<Order>, order_ass
                 }
             }
             Some(status) = update_status_rx.recv() => {
-                positions.insert(status.elev_idx, status.floor);
-                // Collect all elevator indices that have positions (not just 0..n)
+                if status.floor.is_some() {
+                    positions.insert(status.elev_idx, status.floor.unwrap());
+                }
+                else {
+                    positions.remove(&status.elev_idx);
+                    orders.push_front(current_orders[&status.elev_idx].as_ref().unwrap().clone());
+                    current_orders.insert(status.elev_idx, None);
+                }
                 alive_elevs = positions.keys().copied().collect();
+
             }
             else => {
                 println!("All channels closed, exiting order management");
@@ -114,13 +121,10 @@ fn assign_new_orders(order: Order, orders: &mut VecDeque<Order>, positions: &Has
 
     // AVAILABLE ELEVATORS
     // Assign the order to the closest elevator
-    let closest_elev = find_closest_elev(available_elevs, &order, positions);
-
-    // Assign order to closest elevator, if any
-    if let Some(elev_idx) = closest_elev {
-        current_orders.insert(elev_idx, Some(order.clone()));
+    if let Some(closest_elev) = find_closest_elev(available_elevs, &order, positions) {
+        current_orders.insert(closest_elev, Some(order.clone()));
         orders.retain(|item| item != &order);
-        return Some(elev_idx);
+        return Some(closest_elev);
     }
     None
 
@@ -177,7 +181,7 @@ fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
             };
         }
         _ => 'Cab: {
-            // Pick first eligible order in the queue (cab orders must be for this elevator)
+            // Pick first eligible order in the queue
             if let Some(order) = eligble_orders.first().cloned() {
                 order_found.0 = Some(order);
                 if order_found.0.as_ref().unwrap().cb.floor > completed_order.cb.floor {
@@ -194,7 +198,7 @@ fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
     // See if there are any orders on the way to selected order
     if order_found.0.is_some() {
         let elev_idx = completed_order.elev_idx;
-        let order = find_otw_for_elev(order_found.0.as_ref().unwrap().clone(), eligble_orders.clone(), completed_order);
+        let order = find_closest_order(order_found.0.as_ref().unwrap().clone(), eligble_orders.clone(), completed_order);
         orders.retain(|item| item != order_found.0.as_ref().unwrap());
         current_orders.insert(elev_idx, Some(order));
     }
@@ -264,6 +268,22 @@ fn find_order_otw(busy_elevs: Vec<usize>, order: &Order, current_orders: &HashMa
     return None;
 }
 
+fn find_closest_order(order: Order, eligble_orders: Vec<Order>, completed_order: Order) -> Order {
+    let mut closest_order: Order = order.clone();
+    let mut closest_distance: u8 = M+1;
+
+    for eligble_order in eligble_orders.iter() {
+        if order_on_the_way(completed_order.elev_idx, completed_order.cb.floor, order.clone(), eligble_order.clone()) {
+            let new_closest_distance = u8::abs_diff(eligble_order.cb.floor, order.cb.floor);
+            if new_closest_distance < closest_distance {
+                closest_distance = new_closest_distance;
+                closest_order = eligble_order.clone();
+            }
+        }
+    }
+    return closest_order;
+}
+
 // Designate busy and idle elevators, based on being able to take current order
 fn designate_busy_idle(alive_elevs: Vec<usize>, current_orders: &HashMap<usize, Option<Order>>, order: Order) -> (Vec<usize>, Vec<usize>) {
     let busy_elevs: Vec<usize> = alive_elevs.iter().copied().filter(|&i| {
@@ -304,34 +324,43 @@ fn get_eligible_orders(orders: &VecDeque<Order>, completed_order: Order) -> Vec<
     return eligble_orders;
 }
 
-// Find the closest cab order in the direction of the current order
+// Find the next cab order in the direction of the current order
 fn find_cab_order(orders: Vec<Order>, floor: u8, dir: u8) -> Option<Order> {
     for order in orders.iter() {
         match dir {
             0 => if (order.cb.floor > floor) && (order.cb.call == 2) {return Some(order.clone());}
             1 => if (order.cb.floor < floor) && (order.cb.call == 2) {return Some(order.clone());}
-            _ => return None
+            _ => ()
         }
     }
     return None;
 }
 
-fn find_otw_for_elev(order: Order, eligble_orders: Vec<Order>, completed_order: Order) -> Order {
-    let mut closest_order: Order = order.clone();
-    let mut closest_distance: u8 = M+1;
 
-    for eligble_order in eligble_orders.iter() {
-        if order_on_the_way(completed_order.elev_idx, completed_order.cb.floor, order.clone(), eligble_order.clone()) {
-            let new_closest_distance = u8::abs_diff(eligble_order.cb.floor, order.cb.floor);
-            if new_closest_distance < closest_distance {
-                closest_distance = new_closest_distance;
-                closest_order = eligble_order.clone();
-            }
-        }
-    }
-    return closest_order;
-}
+// fn find_cab_order(orders: Vec<Order>, floor: u8, dir: u8) -> Option<Order> {
+//     let mut closest_order: Option<Order> = None;
+//     let mut closest_distance: u8 = M+1;
 
+//     for order in orders.iter() {
+//         match dir {
+//             0 => if (order.cb.floor > floor) && (order.cb.call == 2) {
+//                 let new_closest_distance = u8::abs_diff(order.cb.floor, floor);
+//                 if new_closest_distance < closest_distance {
+//                     closest_distance = new_closest_distance;
+//                     closest_order = Some(order.clone());
+//                 }
+//             }
+//             1 => if (order.cb.floor < floor) && (order.cb.call == 2) {
+//                 let new_closest_distance = u8::abs_diff(order.cb.floor, floor);
+//                 if new_closest_distance < closest_distance {
+//                     closest_distance = new_closest_distance;
+//                     closest_order = Some(order.clone());
+//                 }
+//             }
+//             _ => ()
+//         }
+//     }
+//     return closest_order;
 
 fn should_change_direction(order: Option<Order>, floor: u8, dir: u8) -> Option<bool> {
     if let Some(order) = order {
