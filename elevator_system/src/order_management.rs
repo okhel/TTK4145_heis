@@ -186,8 +186,9 @@ fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
                 order_found.0 = Some(order);
                 if order_found.0.as_ref().unwrap().cb.floor > completed_order.cb.floor {
                     order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 0 }, elev_idx: completed_order.elev_idx });
+                    break 'Cab;
                 }
-                else if order_found.0.as_ref().unwrap().cb.floor < completed_order.cb.floor {
+                if order_found.0.as_ref().unwrap().cb.floor < completed_order.cb.floor {
                     order_found.1 = Some(Order { cb: CallButton { floor: completed_order.cb.floor, call: 1 }, elev_idx: completed_order.elev_idx });
                 }
             }

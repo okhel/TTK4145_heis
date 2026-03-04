@@ -1,29 +1,19 @@
 mod elevator_control;
-mod elevator_doors;
-mod elevator_lights;
 
 pub mod elevio;
 use elevio::elev::Elevio;
 use elevio::poll::CallButton as CallButton;
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc};
 
-use std::{io::*, time::*, sync::{Arc, Mutex}, collections::HashMap};
+use std::{io::*, time::*, sync::{Arc, Mutex}};
 
 
 pub const NUM_FLOORS: u8 = 4;
 pub const NUM_ELEVATORS: u8 = 3;
 
-#[derive(PartialEq)]
-enum ElevState {
-    Moving,
-    Stationary,
-    DoorsOpen
-}
-
 
 pub struct Elevator {
     io: Elevio,
-    elev_state: Mutex<ElevState>,
     obstruction_state: Mutex<bool>,
     pub last_floor: Mutex<Option<u8>>,
     master_slave_state: Mutex<bool>,
@@ -35,7 +25,6 @@ impl Elevator {
 
         let elevator = Self {
             io: Elevio::init(&format!("localhost:250{}",id), NUM_FLOORS)?,
-            elev_state: Mutex::new(ElevState::Stationary),
             obstruction_state: Mutex::new(false),
             last_floor: Mutex::new(None),
             master_slave_state: Mutex::new(false),

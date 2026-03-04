@@ -1,6 +1,5 @@
-use std::{io, env, collections::HashMap};
-use serde::Serialize;
-use tokio::{sync::mpsc::unbounded_channel as uc, time};
+use std::{io, env};
+use tokio::sync::mpsc::unbounded_channel as uc;
 use order_management::{Order as Order, Status as Status};
 use elevator::elevio::poll::CallButton as CallButton;
 
@@ -8,7 +7,6 @@ pub mod elevator;
 pub mod order_management;
 pub mod networking;
 pub mod process;
-// use elevator::{elevio::elev::Elevio as e, NUM_FLOORS};
 
 #[tokio::main]
 

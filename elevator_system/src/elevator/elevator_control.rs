@@ -46,11 +46,6 @@ impl Elevator {
                         Some(dir) => {
                             direction = Some(dir);
                             self.io.motor_direction(dir);
-                            let new_state = match dir {
-                                elevio::elev::DIRN_STOP => crate::elevator::ElevState::Stationary,
-                                _ => crate::elevator::ElevState::Moving,
-                            };
-                            *self.elev_state.lock().unwrap() = new_state;
                         },
 
                         // If there is no change in direction, and direction is stop, send order complete message
@@ -75,7 +70,6 @@ impl Elevator {
                         if floor == target_call.floor {
                             direction = Some(elevio::elev::DIRN_STOP);
                             self.io.motor_direction(elevio::elev::DIRN_STOP);
-                            *self.elev_state.lock().unwrap() = crate::elevator::ElevState::Stationary;
                             self.io.door_light(true);
 
                             sleep(Duration::from_secs(3)).await;
@@ -146,7 +140,7 @@ impl Elevator {
                 } else {
                     *self.master_slave_state.lock().unwrap() = false;
                 }
-                let _ = master_notify_tx.send((saved_elevs_alive.clone()));
+                let _ = master_notify_tx.send(saved_elevs_alive.clone());
                 println!("Master-slave state: {}, at time {}", *self.master_slave_state.lock().unwrap(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
                 sleep(Duration::from_secs(1)).await;
             }
