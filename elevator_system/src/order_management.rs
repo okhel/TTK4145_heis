@@ -200,7 +200,8 @@ fn assign_next_order(completed_order: Order, orders: &mut VecDeque<Order>,
     if order_found.0.is_some() {
         let elev_idx = completed_order.elev_idx;
         let order = find_closest_order(order_found.0.as_ref().unwrap().clone(), eligble_orders.clone(), completed_order);
-        orders.retain(|item| item != order_found.0.as_ref().unwrap());
+        orders.retain(|item| item != &order);
+        order_found.0 = Some(order.clone());
         current_orders.insert(elev_idx, Some(order));
     }
     return (order_found.0, order_found.1);
@@ -275,13 +276,14 @@ fn find_closest_order(order: Order, eligble_orders: Vec<Order>, completed_order:
 
     for eligble_order in eligble_orders.iter() {
         if order_on_the_way(completed_order.elev_idx, completed_order.cb.floor, order.clone(), eligble_order.clone()) {
-            let new_closest_distance = u8::abs_diff(eligble_order.cb.floor, order.cb.floor);
+            let new_closest_distance = u8::abs_diff(completed_order.cb.floor, eligble_order.cb.floor);
             if new_closest_distance < closest_distance {
                 closest_distance = new_closest_distance;
                 closest_order = eligble_order.clone();
             }
         }
     }
+    println!("Closest order is {:?}", closest_order);
     return closest_order;
 }
 
