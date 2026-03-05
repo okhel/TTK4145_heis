@@ -1,337 +1,136 @@
-use tokio::{net::{ToSocketAddrs, UdpSocket}, select, time};
-use std::{collections::{HashMap, BTreeMap}, sync::Arc, time::Duration};
-use serde::{Serialize, de::DeserializeOwned};
-use std::net::SocketAddr;
-use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc};
-use colored::Colorize;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use crate::order_management::{Order as Order, Status as Status};
-use crate::elevator::elevio::poll::CallButton as CallButton;
+use tokio::net::UdpSocket;
+use tokio::sync::{
+    Mutex, mpsc::UnboundedReceiver as URx, mpsc::UnboundedSender as UTx,
+    mpsc::unbounded_channel as uc,
+};
+use tokio::time::{self, Duration};
 
-// Message type identifiers
-pub const MSG_TYPE_CALL_REQUEST: u8 = 0;
-pub const MSG_TYPE_CALL_ASSIGNMENT: u8 = 1;
-pub const MSG_TYPE_UPDATE_FLOOR: u8 = 2;
-pub const MSG_TYPE_CALL_COMPLETE: u8 = 3;
-pub const MSG_TYPE_CALL_LIGHT_ASSIGNMENT: u8 = 4;
+use crate::networking::transport::{recv_reliable, send_reliable};
+use crate::networking::types::Msg;
 
-// Enum representing all possible message types
-#[derive(Debug, Clone)]
-pub enum NetworkMessage {
-    CallRequest(CallButton),
-    CallAssignment(CallButton),
-    UpdateFloor(u8),
-    CallComplete(CallButton),
-    CallLightAssignment(CallButton, bool),
+pub mod transport;
+pub mod types;
+
+async fn init_socket(port: u16) -> Arc<UdpSocket> {
+    let addr = format!("localhost:{}", port);
+    Arc::new(UdpSocket::bind(addr).await.unwrap())
 }
 
-
-pub async fn init_socket(local_id: &String) -> Arc<UdpSocket> {
-    let local_addr = format!("localhost:{}", local_id);
-    let sock = UdpSocket::bind(local_addr).await.unwrap();
-    let mysock: Arc<UdpSocket> = Arc::new(sock);
-
-    mysock.clone()
-}
-
-pub async fn ping_alive_sender(send_sock: Arc<UdpSocket>, id: u8, remote_ids: Vec<u8>) {
-    loop {
-        for remote_id in &remote_ids {
-            let remote_addr = format!("localhost:300{}", remote_id);
-            send_sock.send_to(&id.to_be_bytes(), &remote_addr).await.unwrap();
-            //println!("Sent id: {} to {}", id, remote_addr);
-        }
-        time::sleep(Duration::from_millis(1000)).await;
-    }
-}
-
-pub async  fn ping_alive_receiver(recv_sock: Arc<UdpSocket>, ping_received_tx: UTx<u8>) {
-    loop {
-        let mut buf  = [0; 1024];
-        let (n,addr) = recv_sock.recv_from(&mut buf).await.unwrap();
-        let data = &buf[..n];
-        let received_id = u8::from_be_bytes([data[0]]);
-        //println!("Received ping from {}: {}", addr, received_id);
-        let _ = ping_received_tx.send(received_id);
-    }
-}
-
-pub async fn store_online_elevators(
-    local_id: u8,
-    elevs_alive_tx: UTx<Vec<u8>>,
-    mut ping_received_rx: URx<u8>,
+pub async fn network_runner(
+    my_id: u8,
+    remote_ids: Vec<u8>,
+    // message passing
+    mut inbox: URx<Msg>,
+    outbox: UTx<Msg>,
+    // pings out to master_slave module
+    ping_tx: UTx<u8>,
+    // alive list from master_slave module
+    mut alive_rx: URx<Vec<u8>>,
+    // ack notification
+    ack_complete_tx: UTx<(u32, Msg)>,
 ) {
-    let mut online_elevators: BTreeMap<u8, time::Instant> = BTreeMap::new();
-    let timeout_duration = Duration::from_millis(5000);
-    let debounce_duration = Duration::from_secs(1);
+    let send_socket = init_socket(20000 + my_id as u16).await;
+    let recv_socket = init_socket(21000 + my_id as u16).await;
+    let ping_socket = init_socket(30000 + my_id as u16).await;
 
-    let mut debounce_deadline: Option<time::Instant> = None;
+    let ping_addrs: Vec<String> = remote_ids
+        .iter()
+        .map(|id| format!("localhost:{}", 30000 + *id as u16))
+        .collect();
+
+    let mut seq: u32 = 0;
+    let mut is_master = false;
+    let mut master_id: Option<u8> = None;
+    let mut peer_ids: Vec<u8> = Vec::new();
+    let mut peer_addrs: HashMap<u8, String> = HashMap::new();
+
+    // ACK tracking
+    let pending_acks: Arc<Mutex<HashMap<u32, (HashSet<u8>, Msg)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let (ack_tx, mut ack_rx) = uc::<(u32, u8)>();
+
+    let mut ping_interval = time::interval(Duration::from_millis(1000));
+    let mut ping_buf = [0u8; 64];
 
     loop {
         tokio::select! {
-            Some(received_id) = ping_received_rx.recv() => {
-                let now = time::Instant::now();
-                
-                if online_elevators.insert(received_id, now).is_none() {
-                    debounce_deadline = Some(now + debounce_duration);
+            // send heartbeats
+            _ = ping_interval.tick() => {
+                for addr in &ping_addrs {
+                    let _ = ping_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
                 }
             }
 
-            _ = time::sleep(Duration::from_millis(500)) => {
-                let now = time::Instant::now();
-                let before_len = online_elevators.len();
+            // receive and forward pings to master_slave
+            Ok((n, _)) = ping_socket.recv_from(&mut ping_buf) => {
+                let received_id = ping_buf[..n][0];
+                let _ = ping_tx.send(received_id);
+            }
 
-                online_elevators.insert(local_id, now);
+            // receive role updates from master_slave
+            Some(alive) = alive_rx.recv() => {
+                master_id = alive.first().copied();
+                is_master = master_id == Some(my_id);
+                peer_ids = alive.iter().filter(|&&id| id != my_id).cloned().collect();
+                peer_addrs = alive.iter()
+                    .filter(|&&id| id != my_id)
+                    .map(|&id| (id, format!("localhost:{}", 20000 + id as u16)))
+                    .collect();
+            }
 
-                online_elevators.retain(|_, last_seen| {
-                    now.duration_since(*last_seen) < timeout_duration
-                });
+            // route message based on role
+            Some(msg) = inbox.recv() => {
+                let target_ids: Vec<u8> = if is_master {
+                    peer_ids.clone()
+                } else if let Some(m_id) = master_id {
+                    vec![m_id]
+                } else {
+                    vec![]
+                };
 
-                if online_elevators.len() != before_len {
-                    debounce_deadline = Some(now + debounce_duration);
+                if !target_ids.is_empty() {
+                    let expected: HashSet<u8> = target_ids.iter().cloned().collect();
+                    pending_acks.lock().await.insert(seq, (expected, msg.clone()));
+
+                    for id in target_ids {
+                        if let Some(addr) = peer_addrs.get(&id) {
+                            let socket = send_socket.clone();
+                            let msg = msg.clone();
+                            let ack_tx = ack_tx.clone();
+                            let addr: std::net::SocketAddr = addr.parse().unwrap();
+                            tokio::spawn(async move {
+                                send_reliable(socket, msg, addr, seq).await;
+                                let _ = ack_tx.send((seq, id));
+                            });
+                        }
+                    }
+                    seq = seq.wrapping_add(1);
                 }
             }
 
-            // Debounce trigger
-            _ = async {
-                if let Some(deadline) = debounce_deadline {
-                    time::sleep_until(deadline).await;
-                }
-            }, if debounce_deadline.is_some() => {
-                elevs_alive_tx.send(online_elevators.keys().cloned().collect()).unwrap();
-                println!("Online elevators: {:?}", online_elevators.keys());
-                debounce_deadline = None;
-            }
-        }
-    }
-}
-
-
-pub const MAGIC: [u8; 4] = *b"EVL1";       // tag to make sure packet is sent from us, kinda redundant might delete later 
-
-// returns bytes sent 
-pub async fn send_msg<T: Serialize>(
-    sock: Arc<UdpSocket>,
-    addr: &impl ToSocketAddrs,
-    msg: &T,
-    typ: u8,
-) -> usize {
-    let payload = bincode::serialize(msg).expect("bincode serialize failed");
-
-    let mut pkt = Vec::with_capacity(4 + payload.len() + 1);
-    pkt.extend_from_slice(&MAGIC);
-    pkt.extend_from_slice(&payload);
-    pkt.push(typ);
-
-    sock.send_to(&pkt, addr).await.expect("udp send_to failed")
-}
-
-
-pub async fn recv_msg<T: DeserializeOwned>(
-    sock: Arc<UdpSocket>,
-) -> (T, SocketAddr, u8) {
-    let mut buf  = [0; 1024];
-    let (n, from) = sock.recv_from(&mut buf).await.expect("udp recv_from failed");
-    let data = &buf[..n];
-
-    assert!(data.len() >= 5, "packet too short"); // MAGIC (4) + at least 1 byte payload + type (1)
-    assert!(data[..4] == MAGIC, "bad magic");
-
-    let typ = data[n - 1]; // Last byte is the type identifier
-    let msg: T = bincode::deserialize(&data[4..n-1]).expect("bincode deserialize failed");
-    (msg, from, typ)
-}
-
-// Receive message and deserialize to the correct type based on the type identifier
-pub async fn recv_typed_msg(
-    sock: Arc<UdpSocket>,
-) -> (NetworkMessage, SocketAddr, u8) {
-    loop {
-        let mut buf  = [0; 1024];
-        let (n, from) = sock.recv_from(&mut buf).await.expect("udp recv_from failed");
-        let data = &buf[..n];
-
-        assert!(data.len() >= 5, "packet too short"); // MAGIC (4) + at least 1 byte payload + type (1)
-        assert!(data[..4] == MAGIC, "bad magic");
-
-        let typ = data[n - 1]; // Last byte is the type identifier
-        let payload = &data[4..n-1];
-
-        let msg = match typ {
-            MSG_TYPE_CALL_REQUEST => {
-                let cb: CallButton = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallRequest(cb)
-            }
-            MSG_TYPE_CALL_ASSIGNMENT => {
-                let cb: CallButton = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallAssignment(cb)
-            }
-            MSG_TYPE_UPDATE_FLOOR => {
-                let floor: u8 = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::UpdateFloor(floor)
-            }
-            MSG_TYPE_CALL_COMPLETE => {
-                let cb: CallButton = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallComplete(cb)
-            }
-            MSG_TYPE_CALL_LIGHT_ASSIGNMENT => {
-                let (cb, on): (CallButton, bool) = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallLightAssignment(cb, on)
-            }
-            _ => panic!("Unknown message type: {}", typ),
-        };
-
-        return (msg, from, typ);
-    }
-}
-
-pub async fn udp_sender(socket:Arc<UdpSocket>, master_addr: String, slave_addrs: Vec<String>, mut call_request_rx: URx<CallButton>, mut order_assign_rx: URx<Order>, mut update_floor_rx: URx<u8>, mut call_complete_rx: URx<CallButton>, mut order_light_assign_rx: URx<(Order, bool)>) {
-    loop {
-        select! {
-            Some(cb) = call_request_rx.recv() => {
-                send_msg::<CallButton>(socket.clone(), &master_addr, &cb, MSG_TYPE_CALL_REQUEST).await;
-            }
-            Some(order) = order_assign_rx.recv() => {
-                send_msg::<CallButton>(socket.clone(), &format!("localhost:200{}", order.elev_idx), &order.cb, MSG_TYPE_CALL_ASSIGNMENT).await;
-            }
-            Some(floor) = update_floor_rx.recv() => {
-                send_msg::<u8>(socket.clone(), &master_addr, &floor, MSG_TYPE_UPDATE_FLOOR).await;
-            }
-            Some(cb) = call_complete_rx.recv() => {
-                send_msg::<CallButton>(socket.clone(), &master_addr, &cb, MSG_TYPE_CALL_COMPLETE).await;
-            }
-            Some((order,on)) = order_light_assign_rx.recv() => {
-                if order.cb.call != 2 {
-                    send_msg::<(CallButton, bool)>(socket.clone(), &master_addr, &(order.clone().cb,on), MSG_TYPE_CALL_LIGHT_ASSIGNMENT).await;
-                    for slave_addr in &slave_addrs {
-                        send_msg::<(CallButton, bool)>(socket.clone(), &slave_addr, &(order.cb.clone(),on), MSG_TYPE_CALL_LIGHT_ASSIGNMENT).await;
+            // track ACKs
+            Some((ack_seq, peer_id)) = ack_rx.recv() => {
+                let mut map = pending_acks.lock().await;
+                let all_acked = if let Some((remaining, _)) = map.get_mut(&ack_seq) {
+                    remaining.remove(&peer_id);
+                    remaining.is_empty()
+                } else {
+                    false
+                };
+                if all_acked {
+                    if let Some((_, msg)) = map.remove(&ack_seq) {
+                        let _ = ack_complete_tx.send((ack_seq, msg));
                     }
                 }
-                else {
-                    send_msg::<(CallButton, bool)>(socket.clone(), &format!("localhost:200{}", order.elev_idx), &(order.cb,on), MSG_TYPE_CALL_LIGHT_ASSIGNMENT).await;
-                }
             }
-            
-        }
-    }
-}
 
-
-// pub async fn network_runner(elevs_alive_tx: UTx<Vec<u8>>, mut at_floor_rx: URx<u8>, local_id: u8, remote_ids: Vec<u8>){
-
-
-//     let _ = tokio::join!(ping_alive_sender_task, ping_alive_receiver_task, store_online_elevators_task);
-
-// }
-
-pub async fn udp_receiver(socket:Arc<UdpSocket>, order_request_tx: UTx<Order>, call_assign_tx: UTx<CallButton>, update_status_tx: UTx<Status>, order_complete_tx: UTx<Order>, call_light_assign_tx: UTx<(CallButton, bool)>) {
-    loop {
-        // First check for alive pings (simple text messages)
-        let mut buf = [0; 1024];
-        let (n, from) = socket.recv_from(&mut buf).await.expect("udp recv_from failed");
-        let data = &buf[..n];
-        
-        
-        // Not an alive ping - process as protocol message
-        // We need to use recv_typed_msg, but it will recv again, so we need a different approach
-        // Let's process the protocol message directly here
-        assert!(data.len() >= 5, "packet too short");
-        assert!(data[..4] == MAGIC, "bad magic");
-        
-        let typ = data[n - 1];
-        let payload = &data[4..n-1];
-        // Extract elevator ID from port: port format is 200{id}, so extract id by subtracting 20000
-        let elev_idx = (from.port() - 20000) as usize;
-        
-        let msg = match typ {
-            MSG_TYPE_CALL_REQUEST => {
-                let cb: CallButton = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallRequest(cb)
-            }
-            MSG_TYPE_CALL_ASSIGNMENT => {
-                let cb: CallButton = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallAssignment(cb)
-            }
-            MSG_TYPE_UPDATE_FLOOR => {
-                let floor: u8 = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::UpdateFloor(floor)
-            }
-            MSG_TYPE_CALL_COMPLETE => {
-                let cb: CallButton = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallComplete(cb)
-            }
-            MSG_TYPE_CALL_LIGHT_ASSIGNMENT => {
-                let (cb, on): (CallButton, bool) = bincode::deserialize(payload).expect("bincode deserialize failed");
-                NetworkMessage::CallLightAssignment(cb, on)
-            }
-            _ => {
-                println!("Unknown message type: {}", typ);
-                continue;
-            }
-        };
-        
-        // println!("{:?}", &msg);
-
-        match msg {
-            NetworkMessage::CallRequest(cb) => {
-                // CALL REQUEST
-                let _ = order_request_tx.send(Order { cb: cb, elev_idx});
-            }
-            NetworkMessage::CallAssignment(cb) => {
-                // ORDER ASSIGNMENT
-                let _ = call_assign_tx.send(cb);
-            }
-            NetworkMessage::UpdateFloor(floor) => {
-                // UPDATE FLOOR
-                let _ = update_status_tx.send(Status { floor: Some(floor), elev_idx});
-            }
-            NetworkMessage::CallComplete(cb) => {
-                // CALL COMPLETE
-                let _ = order_complete_tx.send(Order { cb: cb, elev_idx});
-            }
-            NetworkMessage::CallLightAssignment(cb, on) => {
-                // ORDER LIGHT ASSIGNMENT
-                let _ = call_light_assign_tx.send((cb, on));
+            // route incoming messages
+            Ok((msg, _, _)) = recv_reliable(&recv_socket) => {
+                let _ = outbox.send(msg);
             }
         }
     }
-}
-
-
-pub async fn network_runner(local: u8, remote_ids: Vec<u8>, call_request_rx: URx<CallButton>, call_assign_tx: UTx<CallButton>, update_floor_rx: URx<u8>, call_complete_rx: URx<CallButton>, call_light_assign_tx: UTx<(CallButton, bool)>,
-order_request_tx: UTx<Order>, order_assign_rx: URx<Order>, update_status_tx: UTx<Status>, order_complete_tx: UTx<Order>, order_light_assign_rx: URx<(Order, bool)>, elevs_alive_tx: UTx<Vec<u8>>, mut master_notify_rx: URx<Vec<u8>>, elevs_alive_rx: URx<Vec<u8>>) {
-    
-
-    let (ping_received_tx, ping_received_rx) = uc::<u8>();
-    let ping_socket = init_socket(&format!("300{}", local)).await;
-    let sender_ping_socket = ping_socket.clone();
-    let receiver_ping_socket = ping_socket.clone();
-    let remote_ids_clone = remote_ids.clone();
-
-    let ping_alive_sender_task = tokio::spawn(async move {
-        ping_alive_sender(sender_ping_socket.clone(), local, remote_ids_clone).await});
-    let ping_alive_receiver_task = tokio::spawn(async move {
-        ping_alive_receiver(receiver_ping_socket.clone(), ping_received_tx).await});
-    let store_online_elevators_task = tokio::spawn(async move {
-        store_online_elevators(local, elevs_alive_tx, ping_received_rx).await});
-                
-    let socket = init_socket(&format!("200{}", local)).await;
-    let sender_socket = socket.clone();
-    let receiver_socket = socket.clone();
-
-
-    let udp_sender_task = tokio::spawn(async move {
-        let alive_ids = vec![19, 20, 21];
-        let master_id = *alive_ids.iter().min().expect("alive_ids kan ikke være tom");
-        let master_addr = format!("localhost:200{}", master_id);
-
-        // Slave-adresser (alle unntatt master)
-        let slave_addrs: Vec<String> = alive_ids.iter().filter(|&&id| id != master_id).map(|&id| format!("localhost:200{}", id)).collect();
-
-        udp_sender(sender_socket, master_addr, slave_addrs, call_request_rx, order_assign_rx, update_floor_rx, call_complete_rx, order_light_assign_rx).await
-    });
-    let udp_receiver_task = tokio::spawn(async move {
-        udp_receiver(receiver_socket, order_request_tx, call_assign_tx, update_status_tx, order_complete_tx, call_light_assign_tx).await}); 
-
-    let _ = tokio::join!(udp_sender_task, udp_receiver_task, ping_alive_sender_task, ping_alive_receiver_task, store_online_elevators_task);
 }

@@ -1,7 +1,6 @@
 use crate::networking::types::Msg;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 
 const MAX_MSG_BYTES: usize = 65507;
@@ -15,19 +14,16 @@ pub enum Frame {
 }
 
 pub async fn send_reliable(
-    socket: &UdpSocket,
-    msg: &Msg,
+    socket: Arc<UdpSocket>,
+    msg: Msg,
     addr: SocketAddr,
     seq: u32,
 ) -> std::io::Result<()> {
-    let frame = Frame::Data {
-        seq,
-        msg: msg.clone(),
-    };
+    let frame = Frame::Data { seq, msg };
     let payload = bincode::serialize(&frame).expect("serialize failed");
     for attempt in 0..MAX_RETRIES {
         socket.send_to(&payload, addr).await?;
-        match tokio::time::timeout(ACK_TIMEOUT, recv_ack(socket, seq)).await {
+        match tokio::time::timeout(ACK_TIMEOUT, recv_ack(&socket, seq)).await {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(e)) => return Err(e),
             Err(_) => {
@@ -43,7 +39,6 @@ pub async fn send_reliable(
         format!("no ACK after {MAX_RETRIES} attempts"),
     ))
 }
-
 pub async fn recv_reliable(socket: &UdpSocket) -> std::io::Result<(Msg, u32, SocketAddr)> {
     let mut buf = vec![0u8; MAX_MSG_BYTES];
     loop {
@@ -77,14 +72,15 @@ async fn send_ack(
     Ok(())
 }
 
-async fn recv_ack(socket: &UdpSocket, expected_seq: u32) -> std::io::Result<()> {
+async fn recv_ack(socket: &UdpSocket, seq: u32, original_msg: &Msg) -> std::io::Result<()> {
     let mut buf = vec![0u8; MAX_MSG_BYTES];
     loop {
         let (len, _) = socket.recv_from(&mut buf).await?;
-        if let Ok(Frame::Ack { seq, .. }) = bincode::deserialize(&buf[..len]) {
-            if seq == expected_seq {
-                return Ok(());
-            }
+        let frame: Frame = bincode::deserialize(&buf[..len])
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        match frame {
+            Frame::Ack { seq: s, msg } if s == seq && msg == *original_msg => return Ok(()),
+            _ => continue,
         }
     }
 }
