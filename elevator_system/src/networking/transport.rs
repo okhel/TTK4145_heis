@@ -19,11 +19,11 @@ pub async fn send_reliable(
     addr: SocketAddr,
     seq: u32,
 ) -> std::io::Result<()> {
-    let frame = Frame::Data { seq, msg };
+    let frame = Frame::Data { seq, msg: msg.clone() };
     let payload = bincode::serialize(&frame).expect("serialize failed");
     for attempt in 0..MAX_RETRIES {
         socket.send_to(&payload, addr).await?;
-        match tokio::time::timeout(ACK_TIMEOUT, recv_ack(&socket, seq)).await {
+        match tokio::time::timeout(ACK_TIMEOUT, recv_ack(&socket, seq, &msg)).await {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(e)) => return Err(e),
             Err(_) => {

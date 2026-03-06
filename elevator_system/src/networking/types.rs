@@ -21,12 +21,12 @@ pub struct HallCall {
     pub call: Direction,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct CabCall {
     pub floor: u8,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ElevatorState {
     pub id: u8,
     pub floor: u8,
@@ -42,34 +42,17 @@ pub enum Role {
     Slave { master_id: u8 },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Msg {
     // slave to master
     StateUpdate(ElevatorState),
-    NewHallCall(HallCall),
-    HallCallDone(HallCall),
+    NewHallCall { from: u8, call: HallCall },
+    HallCallDone { from: u8, call: HallCall },
 
     // master to slave
-    AssignHallCall(HallCall),
+    AssignHallCall { to: u8, call: HallCall },
     WorldState { assignments: Vec<(HallCall, u8)> },
 
     // both
     Heartbeat,
-}
-
-// communication with order_management, master emits networkevents, order_mgmt sends networkcommands
-
-#[derive(Debug)]
-pub enum NetworkEvent {
-    NewHallCall { from: u8, call: HallCall },
-    HallCallDone { from: u8, call: HallCall },
-    StateUpdate(ElevatorState),
-    PeerConnected(u8),
-    PeerDisconnected(u8),
-}
-
-#[derive(Debug)]
-pub enum NetworkCommand {
-    AssignHallCall { to: u8, call: HallCall },
-    BroadcastWorldState(Vec<(HallCall, u8)>),
 }
