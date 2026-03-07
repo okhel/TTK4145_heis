@@ -32,14 +32,14 @@ pub async fn network_runner(
     // ack notification
     ack_complete_tx: UTx<(u32, Msg)>,
 ) {
-    let send_socket = init_socket(20000 + my_id as u16).await;
     let recv_socket = init_socket(21000 + my_id as u16).await;
-    let ping_socket = init_socket(30000 + my_id as u16).await;
 
+    // Heartbeat task runs independently so message processing can never delay pings
     let ping_addrs: Vec<String> = remote_ids
         .iter()
         .map(|id| format!("localhost:{}", 30000 + *id as u16))
         .collect();
+    tokio::spawn(heartbeat_runner(my_id, ping_addrs, ping_tx));
 
     let mut seq: u32 = 0;
     let mut is_master = false;
@@ -52,24 +52,8 @@ pub async fn network_runner(
         Arc::new(Mutex::new(HashMap::new()));
     let (ack_tx, mut ack_rx) = uc::<(u32, u8)>();
 
-    let mut ping_interval = time::interval(Duration::from_millis(1000));
-    let mut ping_buf = [0u8; 64];
-
     loop {
         tokio::select! {
-            // send heartbeats
-            _ = ping_interval.tick() => {
-                for addr in &ping_addrs {
-                    let _ = ping_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
-                }
-            }
-
-            // receive and forward pings to master_slave
-            Ok((n, _)) = ping_socket.recv_from(&mut ping_buf) => {
-                let received_id = ping_buf[..n][0];
-                let _ = ping_tx.send(received_id);
-            }
-
             // receive role updates from master_slave
             Some(alive) = alive_rx.recv() => {
                 master_id = alive.first().copied();
@@ -77,7 +61,7 @@ pub async fn network_runner(
                 peer_ids = alive.iter().filter(|&&id| id != my_id).cloned().collect();
                 peer_addrs = alive.iter()
                     .filter(|&&id| id != my_id)
-                    .map(|&id| (id, format!("localhost:{}", 20000 + id as u16)))
+                    .map(|&id| (id, format!("localhost:{}", 21000 + id as u16)))
                     .collect();
             }
 
@@ -97,12 +81,15 @@ pub async fn network_runner(
 
                     for id in target_ids {
                         if let Some(addr) = peer_addrs.get(&id) {
-                            let socket = send_socket.clone();
                             let msg = msg.clone();
                             let ack_tx = ack_tx.clone();
                             let addr: std::net::SocketAddr = addr.parse().unwrap();
                             tokio::spawn(async move {
-                                send_reliable(socket, msg, addr, seq).await;
+                                // Each task gets its own socket to avoid recv_ack contention
+                                let socket = Arc::new(
+                                    UdpSocket::bind("localhost:0").await.unwrap()
+                                );
+                                let _ = send_reliable(socket, msg, addr, seq).await;
                                 let _ = ack_tx.send((seq, id));
                             });
                         }
@@ -130,6 +117,27 @@ pub async fn network_runner(
             // route incoming messages
             Ok((msg, _, _)) = recv_reliable(&recv_socket) => {
                 let _ = outbox.send(msg);
+            }
+        }
+    }
+}
+
+async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) {
+    let ping_socket = init_socket(30000 + my_id as u16).await;
+    let mut ping_interval = time::interval(Duration::from_millis(1000));
+    let mut ping_buf = [0u8; 64];
+
+    loop {
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                for addr in &ping_addrs {
+                    let _ = ping_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
+                }
+            }
+
+            Ok((n, _)) = ping_socket.recv_from(&mut ping_buf) => {
+                let received_id = ping_buf[..n][0];
+                let _ = ping_tx.send(received_id);
             }
         }
     }

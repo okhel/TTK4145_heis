@@ -12,15 +12,26 @@ pub async fn master_check(local_id: u8, mut ping_rx: URx<u8>, elevs_alive_tx: UT
     loop {
         tokio::select! {
             Some(peer_id) = ping_rx.recv() => {
+                let is_new = !peer_last_seen.contains_key(&peer_id);
                 peer_last_seen.insert(peer_id, Instant::now());
-                let alive = store_alive_elevators(local_id, &peer_last_seen);
-                let _ = elevs_alive_tx.send(alive);
+                if is_new {
+                    let alive = store_alive_elevators(local_id, &peer_last_seen);
+                    let master = alive[0];
+                    println!("Peer {} connected | alive: {:?} | master: {}, I am {}",
+                        peer_id, alive, master,
+                        if master == local_id { "MASTER" } else { "SLAVE" });
+                    let _ = elevs_alive_tx.send(alive);
+                }
             }
             _ = check_interval.tick() => {
                 let before = peer_last_seen.len();
                 peer_last_seen.retain(|_, last| last.elapsed() < PEER_TIMEOUT);
                 if peer_last_seen.len() != before {
                     let alive = store_alive_elevators(local_id, &peer_last_seen);
+                    let master = alive[0];
+                    println!("Peer(s) timed out | alive: {:?} | master: {}, I am {}",
+                        alive, master,
+                        if master == local_id { "MASTER" } else { "SLAVE" });
                     let _ = elevs_alive_tx.send(alive);
                 }
             }
