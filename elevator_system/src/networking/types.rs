@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::elevator::elevio::poll::CallButton;
+
 // constants
 
 pub const BASE_PORT: u16 = 20000;
@@ -15,24 +17,12 @@ pub enum Direction {
     Idle,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
-pub struct HallCall {
-    pub floor: u8,
-    pub call: Direction,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct CabCall {
-    pub floor: u8,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ElevatorState {
     pub id: u8,
     pub floor: u8,
     pub direction: Direction,
     pub door_open: bool,
-    pub assigned_hall_calls: Vec<HallCall>,
     pub cab_calls: Vec<u8>,
 }
 
@@ -46,12 +36,12 @@ pub enum Role {
 pub enum Msg {
     // slave to master
     StateUpdate(ElevatorState),
-    NewHallCall { from: u8, call: HallCall },
-    HallCallDone { from: u8, call: HallCall },
+    NewHallCall { from: u8, call: CallButton },
+    HallCallDone { from: u8, call: CallButton },
 
     // master to slave
-    AssignHallCall { to: u8, call: HallCall },
-    WorldState { assignments: Vec<(HallCall, u8)> },
+    AssignHallCall { to: u8, call: CallButton },
+    WorldState { assignments: Vec<(CallButton, u8)> },
 
     // both
     Heartbeat,

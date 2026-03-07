@@ -1,8 +1,7 @@
 use crate::elevator::{Elevator, elevio};
-use tokio::select;
+use crate::elevator::elevio::poll::{CallButton, CallType};
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 use tokio::time::{sleep, Duration};
-use crate::elevator::elevio::poll::CallButton as CallButton;
 
 impl Elevator {
 
@@ -29,7 +28,7 @@ impl Elevator {
         let _ = update_floor_tx.send(self.last_floor.lock().unwrap().unwrap());
         
         let mut direction: Option<u8> = Some(elevio::elev::DIRN_STOP);
-        let mut target_call: CallButton = CallButton { floor: 0, call: 0 };
+        let mut target_call: CallButton = CallButton { floor: 0, call: CallType::HallUp };
         let mut between_floors: bool = false;
 
         loop {
@@ -114,7 +113,7 @@ impl Elevator {
     pub async fn set_lights(&self, mut call_light_assign_rx: URx<(CallButton, bool)>) {
         loop {
             if let Some((cb, on)) = call_light_assign_rx.recv().await {
-                self.io.call_button_light(cb.floor, cb.call, on);
+                self.io.call_button_light(cb.floor, cb.call.as_u8(), on);
             }
         }
     }
