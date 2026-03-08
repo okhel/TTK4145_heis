@@ -33,6 +33,7 @@ async fn main() -> io::Result<()> {
     let (call_complete_tx, call_complete_rx) = uc::<CallButton>();
     let (call_light_assign_tx, call_light_assign_rx) = uc::<(CallButton, bool)>();
 
+
     // Network channels
     let (network_inbox_tx, network_inbox_rx) = uc::<Msg>();
     let (network_outbox_tx, network_outbox_rx) = uc::<Msg>();
@@ -66,7 +67,7 @@ async fn main() -> io::Result<()> {
     });
 
     let order_task = tokio::spawn(async move {
-        order_management::order_management_runner(
+        order_management::order_manager(
             local_id,
             call_request_rx,
             call_assign_tx,

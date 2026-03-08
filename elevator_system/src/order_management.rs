@@ -1,20 +1,17 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 use tokio::sync::mpsc::{
-    UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc,
+    UnboundedReceiver as URx, UnboundedSender as UTx,
 };
 
 use crate::elevator::elevio::poll::{CallButton, CallType};
 use crate::networking::types::{Direction, ElevatorState, Msg};
 
+
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Order {
     pub cb: CallButton,
-    pub elev_idx: usize,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Status {
-    pub floor: Option<u8>,
     pub elev_idx: usize,
 }
 
@@ -23,255 +20,256 @@ struct NextOrderResult {
     clear: Option<Order>,
 }
 
-const M: u8 = 3; // number of floors
+const M: u8 = 3; // floors
 
-pub async fn order_management_runner(
-    local_id: u8,
-    // local elevator channels (CallButton-based)
-    call_request_rx: URx<CallButton>,
-    call_assign_tx: UTx<CallButton>,
-    update_floor_rx: URx<u8>,
-    call_complete_rx: URx<CallButton>,
-    call_light_assign_tx: UTx<(CallButton, bool)>,
-    // network channels (Msg-based)
-    network_tx: UTx<Msg>,
-    network_rx: URx<Msg>,
-    ack_complete_rx: URx<(u32, Msg)>,
-) {
-    let local_idx = local_id as usize;
+enum Event {
+    // from local elevator 
+    ButtonPressed(CallButton),
+    FloorReached(u8),
+    OrderCompleted(CallButton),
 
-    // internal channels between router and order_manager
-    let (order_request_tx, order_request_rx) = uc::<Order>();
-    let (order_assign_internal_tx, order_assign_internal_rx) = uc::<Order>();
-    let (update_status_tx, update_status_rx) = uc::<Status>();
-    let (order_complete_tx, order_complete_rx) = uc::<Order>();
-    let (order_light_internal_tx, order_light_internal_rx) = uc::<(Order, bool)>();
-
-    // router: bridges local elevator (CallButton) and network (Msg) with internal Order channels
-    let router_task = tokio::spawn(async move {
-        router(
-            local_id,
-            local_idx,
-            call_request_rx,
-            call_assign_tx,
-            update_floor_rx,
-            call_complete_rx,
-            call_light_assign_tx,
-            network_tx,
-            network_rx,
-            ack_complete_rx,
-            order_request_tx,
-            order_assign_internal_rx,
-            update_status_tx,
-            order_complete_tx,
-            order_light_internal_rx,
-        )
-        .await;
-    });
-
-    let order_manager_task = tokio::spawn(async move {
-        order_manager(
-            order_request_rx,
-            update_status_rx,
-            order_complete_rx,
-            order_assign_internal_tx,
-            order_light_internal_tx,
-        )
-        .await;
-    });
-
-    let _ = tokio::join!(router_task, order_manager_task);
+    // from network peers
+    PeerButtonPressed { from: u8, call: CallButton },
+    PeerOrderCompleted { from: u8, call: CallButton },
+    PeerStateUpdate(ElevatorState),
+    PeerAssigned { to: u8, call: CallButton },
+    AckReceived(Msg),
 }
 
-async fn router(
+fn msg_to_event(msg: Msg) -> Option<Event> {
+    match msg {
+        Msg::NewHallCall { from, call }  => Some(Event::PeerButtonPressed { from, call }),
+        Msg::HallCallDone { from, call } => Some(Event::PeerOrderCompleted { from, call }),
+        Msg::StateUpdate(state)          => Some(Event::PeerStateUpdate(state)),
+        Msg::AssignHallCall { to, call } => Some(Event::PeerAssigned { to, call }),
+        Msg::WorldState { .. }           => None,
+        Msg::Heartbeat                   => None,
+    }
+}
+
+// TODO: add some master logic to only let master assign orders, maybe add a Role in the ManagerState
+struct ManagerState {
+    orders: VecDeque<Order>,
+    positions: HashMap<usize, u8>,
+    current_orders: HashMap<usize, Option<Order>>,
+    alive_elevs: Vec<usize>,
+    pending_acks: HashMap<CallButton, Order>
+}
+
+impl ManagerState {
+    fn new() -> Self {
+        Self {
+            orders: VecDeque::with_capacity(9),
+            positions: HashMap::new(),
+            current_orders: HashMap::new(),
+            alive_elevs: Vec::new(),
+            pending_acks: HashMap::new(),
+        }
+    }
+}
+
+pub async fn order_manager(
     local_id: u8,
-    local_idx: usize,
-    // local elevator
     mut call_request_rx: URx<CallButton>,
     call_assign_tx: UTx<CallButton>,
     mut update_floor_rx: URx<u8>,
     mut call_complete_rx: URx<CallButton>,
-    call_light_assign_tx: UTx<(CallButton, bool)>,
-    // network
+    call_light_tx: UTx<(CallButton, bool)>,
     network_tx: UTx<Msg>,
     mut network_rx: URx<Msg>,
     mut ack_complete_rx: URx<(u32, Msg)>,
-    // internal order management channels
-    order_request_tx: UTx<Order>,
-    mut order_assign_rx: URx<Order>,
-    update_status_tx: UTx<Status>,
-    order_complete_tx: UTx<Order>,
-    mut order_light_rx: URx<(Order, bool)>,
 ) {
-    loop {
-        tokio::select! {
-            // --- Local elevator → internal ---
+    let local_idx = local_id as usize;
+    let mut state = ManagerState::new();
 
-            Some(cb) = call_request_rx.recv() => {
+    loop {
+        println!("\n-\nOrders: {:?}\nCurrent orders: {:?}", state.orders, state.current_orders);
+
+        let event = tokio::select! {
+            Some(cb)       = call_request_rx.recv() => Event::ButtonPressed(cb),
+            Some(floor)    = update_floor_rx.recv()  => Event::FloorReached(floor),
+            Some(cb)       = call_complete_rx.recv()  => Event::OrderCompleted(cb),
+            Some(msg)      = network_rx.recv()        => match msg_to_event(msg) {
+                Some(e) => e,
+                None    => continue,
+            },
+            Some((_seq, msg)) = ack_complete_rx.recv() => Event::AckReceived(msg),
+            else => panic!("All channels closed"),
+        };
+
+        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx);
+    }
+}
+
+fn handle_event(
+    local_id: u8,
+    local_idx: usize,
+    event: Event,
+    state: &mut ManagerState,
+    call_assign_tx: &UTx<CallButton>,
+    call_light_tx: &UTx<(CallButton, bool)>,
+    network_tx: &UTx<Msg>,
+) {
+    match event {
+        // local buttonpress
+       Event::ButtonPressed(cb) => {
+            if cb.call.is_hall() {
                 let order = Order { cb: cb.clone(), elev_idx: local_idx };
-                let _ = order_request_tx.send(order);
-                if cb.call.is_hall() {
-                    let _ = network_tx.send(Msg::NewHallCall { from: local_id, call: cb });
+                state.pending_acks.insert(cb.clone(), order);
+                let _ = network_tx.send(Msg::NewHallCall { from: local_id, call: cb });
+            } else {
+                // cab calls are local so dont need ack 
+                let order = Order { cb: cb.clone(), elev_idx: local_idx };
+                let _ = call_light_tx.send((cb, true));
+                try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
+            }
+        }
+
+        // local floor update
+        Event::FloorReached(floor) => {
+            state.positions.insert(local_idx, floor);
+            state.alive_elevs = state.positions.keys().copied().collect();
+            let _ = network_tx.send(Msg::StateUpdate(ElevatorState {
+                id: local_id,
+                floor,
+                direction: Direction::Idle,
+                door_open: false,
+                cab_calls: vec![],
+            }));
+        }
+
+        // local order complete
+        Event::OrderCompleted(cb) => {
+            if cb.call.is_hall() {
+                let _ = network_tx.send(Msg::HallCallDone { from: local_id, call: cb.clone() });
+            }
+            let order = Order { cb: cb.clone(), elev_idx: local_idx };
+            complete_and_reassign(order, state, call_assign_tx, call_light_tx, local_idx);
+        }
+
+        // peer pressed a hall button
+        Event::PeerButtonPressed { from, call } => {
+            let order = Order { cb: call, elev_idx: from as usize };
+            try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
+        }
+
+        // master assign call to me 
+        Event::PeerAssigned { to, call } => {
+            if to == local_id {
+                let _ = call_assign_tx.send(call);
+            }
+        }
+
+        // peer completed hall call
+        Event::PeerOrderCompleted { from, call } => {
+            let order = Order { cb: call.clone(), elev_idx: from as usize };
+            let cab_order = Order {
+                cb: CallButton { floor: call.floor, call: CallType::Cab },
+                elev_idx: from as usize,
+            };
+            state.orders.retain(|o| o != &order);
+            state.orders.retain(|o| o != &cab_order);
+            state.current_orders.insert(from as usize, None);
+            let _ = call_light_tx.send((call, false));
+        }
+
+        // peer state update
+        Event::PeerStateUpdate(peer_state) => {
+            let idx = peer_state.id as usize;
+            if peer_state.floor != u8::MAX {
+                // u8::MAX used to mean offline, so only update position if not offline
+                state.positions.insert(idx, peer_state.floor);
+            } else {
+                state.positions.remove(&idx);
+                if let Some(Some(order)) = state.current_orders.get(&idx) {
+                    state.orders.push_front(order.clone());
                 }
+                state.current_orders.insert(idx, None);
             }
+            state.alive_elevs = state.positions.keys().copied().collect();
+        }
 
-            Some(floor) = update_floor_rx.recv() => {
-                let _ = update_status_tx.send(Status { floor: Some(floor), elev_idx: local_idx });
-                let _ = network_tx.send(Msg::StateUpdate(ElevatorState {
-                    id: local_id,
-                    floor,
-                    direction: Direction::Idle,
-                    door_open: false,
-                    cab_calls: vec![],
-                }));
-            }
-
-            Some(cb) = call_complete_rx.recv() => {
-                let _ = order_complete_tx.send(Order { cb: cb.clone(), elev_idx: local_idx });
-                if cb.call.is_hall() {
-                    let _ = network_tx.send(Msg::HallCallDone { from: local_id, call: cb });
+        // got an acked message
+        Event::AckReceived(msg) => {
+            if let Msg::NewHallCall { call, .. } = msg {
+                if let Some(order) = state.pending_acks.remove(&call) {
+                    let _ = call_light_tx.send((call, true));
+                    try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
                 }
-            }
-
-            // --- Network → internal ---
-
-            Some(msg) = network_rx.recv() => {
-                match msg {
-                    Msg::NewHallCall { from, call } => {
-                        let _ = order_request_tx.send(Order { cb: call, elev_idx: from as usize });
-                    }
-                    Msg::AssignHallCall { to, call } => {
-                        if to == local_id {
-                            let _ = call_assign_tx.send(call);
-                        }
-                    }
-                    Msg::HallCallDone { from, call } => {
-                        let _ = order_complete_tx.send(Order { cb: call, elev_idx: from as usize });
-                    }
-                    Msg::StateUpdate(state) => {
-                        let _ = update_status_tx.send(Status {
-                            floor: Some(state.floor),
-                            elev_idx: state.id as usize,
-                        });
-                    }
-                    Msg::WorldState { .. } => {}
-                    Msg::Heartbeat => {}
-                }
-            }
-
-            // --- Internal → local elevator / network ---
-
-            Some(order) = order_assign_rx.recv() => {
-                if order.elev_idx == local_idx {
-                    let _ = call_assign_tx.send(order.cb);
-                } else if order.cb.call.is_hall() {
-                    let _ = network_tx.send(Msg::AssignHallCall {
-                        to: order.elev_idx as u8,
-                        call: order.cb,
-                    });
-                }
-            }
-
-            Some((order, on)) = order_light_rx.recv() => {
-                let _ = call_light_assign_tx.send((order.cb, on));
-            }
-
-            Some((_seq, _msg)) = ack_complete_rx.recv() => {
-                // all peers acknowledged the message
             }
         }
     }
 }
 
-// manages order queue, assignment, and lights
-async fn order_manager(
-    mut order_request_rx: URx<Order>,
-    mut update_status_rx: URx<Status>,
-    mut order_complete_rx: URx<Order>,
-    order_assign_tx: UTx<Order>,
-    order_light_tx: UTx<(Order, bool)>,
+
+// helpers
+fn try_assign_new(
+    order: Order,
+    state: &mut ManagerState,
+    call_assign_tx: &UTx<CallButton>,
+    network_tx: &UTx<Msg>,
+    local_idx: usize,
 ) {
-    let mut orders: VecDeque<Order> = VecDeque::with_capacity(3 * M as usize);
-    let mut positions: HashMap<usize, u8> = HashMap::new();
-    let mut current_orders: HashMap<usize, Option<Order>> = HashMap::new();
-    let mut alive_elevs: Vec<usize> = Vec::new();
-
-    // TODO: Watchdog timer
-
-    loop {
-        println!("");
-        println!("-");
-        println!("Orders: {:?}", orders);
-        println!("Current orders: {:?}", current_orders);
-
-        tokio::select! {
-            Some(order) = order_request_rx.recv() => {
-                // TODO: When network ack logic is added, orders should start as
-                // unconfirmed and only be assigned after ack from peers.
-                let _ = order_light_tx.send((order.clone(), true));
-
-                let new_order_found = assign_new_orders(order.clone(), &mut orders, &mut positions, &mut current_orders, &alive_elevs);
-                if let Some(order_elev_idx) = new_order_found {
-                    let _ = order_assign_tx.send(Order { cb: order.cb.clone(), elev_idx: order_elev_idx });
-                } else {
-                    println!("Could not assign new order");
-                }
-            }
-
-            Some(order) = order_complete_rx.recv() => {
-                // clear completed order and its cab counterpart
-                let cab_order = Order { cb: CallButton { floor: order.cb.floor, call: CallType::Cab }, elev_idx: order.elev_idx };
-                orders.retain(|item| item != &order);
-                orders.retain(|item| item != &cab_order);
-                current_orders.insert(order.elev_idx, None);
-                println!("Cleared order {:?}. ", order);
-
-                // find next order for this elevator
-                let elev_idx = order.elev_idx;
-                let result = assign_next_order(order.clone(), &mut orders, &mut current_orders);
-                if let Some(ref next) = result.next {
-                    let _ = order_assign_tx.send(Order { cb: next.cb.clone(), elev_idx });
-                }
-
-                // turn off lights for cleared orders
-                let mut clear_orders: HashSet<Order> = HashSet::new();
-                clear_orders.insert(order.clone());
-                clear_orders.insert(cab_order);
-                if let Some(clear) = result.clear {
-                    clear_orders.insert(clear);
-                }
-                for cleared in &clear_orders {
-                    let _ = order_light_tx.send((cleared.clone(), false));
-                }
-            }
-
-            Some(status) = update_status_rx.recv() => {
-                if let Some(floor) = status.floor {
-                    positions.insert(status.elev_idx, floor);
-                } else {
-                    positions.remove(&status.elev_idx);
-                    if let Some(Some(order)) = current_orders.get(&status.elev_idx) {
-                        orders.push_front(order.clone());
-                    }
-                    current_orders.insert(status.elev_idx, None);
-                }
-                alive_elevs = positions.keys().copied().collect();
-            }
-
-            else => {
-                panic!("All channels closed");
-            }
+    if let Some(elev_idx) = assign_new_orders(
+        order.clone(),
+        &mut state.orders,
+        &state.positions,
+        &mut state.current_orders,
+        &state.alive_elevs,
+    ) {
+        if elev_idx == local_idx {
+            let _ = call_assign_tx.send(order.cb.clone());
+        } else if order.cb.call.is_hall() {
+            let _ = network_tx.send(Msg::AssignHallCall {
+                to: elev_idx as u8,
+                call: order.cb,
+            });
         }
+    } else {
+        println!("Could not assign new order: {:?}", order);
     }
 }
 
-// assign order to elevator if there is no current order OR assign order on the way to the current order
+fn complete_and_reassign(
+    order: Order,
+    state: &mut ManagerState,
+    call_assign_tx: &UTx<CallButton>,
+    call_light_tx: &UTx<(CallButton, bool)>,
+    local_idx: usize,
+) {
+    let cab_order = Order {
+        cb: CallButton { floor: order.cb.floor, call: CallType::Cab },
+        elev_idx: order.elev_idx,
+    };
+    state.orders.retain(|o| o != &order);
+    state.orders.retain(|o| o != &cab_order);
+    state.current_orders.insert(order.elev_idx, None);
+    println!("Cleared order {:?}", order);
+
+    let result = assign_next_order(order.clone(), &mut state.orders, &mut state.current_orders);
+    if let Some(ref next) = result.next {
+        if next.elev_idx == local_idx {
+            let _ = call_assign_tx.send(next.cb.clone());
+        }
+    }
+
+    let mut to_clear: HashSet<Order> = HashSet::from([order, cab_order]);
+    if let Some(clear) = result.clear {
+        to_clear.insert(clear);
+    }
+    for cleared in &to_clear {
+        let _ = call_light_tx.send((cleared.cb.clone(), false));
+    }
+}
+
+
+// pure functions
 fn assign_new_orders(
     order: Order,
     orders: &mut VecDeque<Order>,
     positions: &HashMap<usize, u8>,
     current_orders: &mut HashMap<usize, Option<Order>>,
-    alive_elevs: &Vec<usize>,
+    alive_elevs: &[usize],
 ) -> Option<usize> {
     if orders.iter().any(|o| o == &order) {
         return None;
@@ -279,126 +277,115 @@ fn assign_new_orders(
 
     *orders = rebuild_queue(orders, order.clone());
     let (busy_elevs, available_elevs) =
-        designate_busy_idle(alive_elevs.clone(), current_orders, order.clone());
+        designate_busy_idle(alive_elevs.to_vec(), current_orders, order.clone());
 
-    // See if any busy elevator can take the order on the way
     if let Some((elev_idx, paused_order)) =
         find_order_otw(busy_elevs, &order, current_orders, positions)
     {
         println!("Found order on the way to {:?}", paused_order);
         orders.push_front(paused_order);
-        orders.retain(|item| item != &order);
+        orders.retain(|o| o != &order);
         current_orders.insert(elev_idx, Some(order));
         return Some(elev_idx);
     }
 
-    // Assign the order to the closest available elevator
-    if let Some(closest_elev) = find_closest_elev(available_elevs, &order, positions) {
-        current_orders.insert(closest_elev, Some(order.clone()));
-        orders.retain(|item| item != &order);
-        return Some(closest_elev);
+    if let Some(closest) = find_closest_elev(available_elevs, &order, positions) {
+        current_orders.insert(closest, Some(order.clone()));
+        orders.retain(|o| o != &order);
+        return Some(closest);
     }
+
     None
 }
 
 fn assign_next_order(
-    completed_order: Order,
+    completed: Order,
     orders: &mut VecDeque<Order>,
     current_orders: &mut HashMap<usize, Option<Order>>,
 ) -> NextOrderResult {
     let mut result = NextOrderResult { next: None, clear: None };
-    let eligible_orders = get_eligible_orders(orders, completed_order.clone());
+    let eligible = get_eligible_orders(orders, completed.clone());
 
-    match completed_order.cb.call {
-        CallType::HallUp => 'hall_up: {
-            if let Some(cab_order) = find_cab_order(eligible_orders.clone(), completed_order.cb.floor, CallType::HallUp) {
-                result.next = Some(cab_order);
-                break 'hall_up;
+    match completed.cb.call {
+        CallType::HallUp => {
+            if let Some(cab) = find_cab_order(eligible.clone(), completed.cb.floor, CallType::HallUp) {
+                result.next = Some(cab);
+            } else {
+                match should_change_direction(eligible.first().cloned(), completed.cb.floor, CallType::HallUp) {
+                    Some(true) => result.next = Some(Order {
+                        cb: CallButton { floor: completed.cb.floor, call: CallType::HallDown },
+                        elev_idx: completed.elev_idx,
+                    }),
+                    Some(false) => {
+                        result.next = eligible.first().cloned();
+                        result.clear = Some(Order {
+                            cb: CallButton { floor: completed.cb.floor, call: CallType::HallUp },
+                            elev_idx: completed.elev_idx,
+                        });
+                    }
+                    None => {}
+                }
             }
-
-            match should_change_direction(eligible_orders.first().cloned(), completed_order.cb.floor, CallType::HallUp) {
-                Some(true) => {
-                    result.next = Some(Order {
-                        cb: CallButton { floor: completed_order.cb.floor, call: CallType::HallDown },
-                        elev_idx: completed_order.elev_idx,
-                    });
-                }
-                Some(false) => {
-                    result.next = eligible_orders.first().cloned();
-                    result.clear = Some(Order {
-                        cb: CallButton { floor: completed_order.cb.floor, call: CallType::HallUp },
-                        elev_idx: completed_order.elev_idx,
-                    });
-                }
-                None => (),
-            };
         }
-        CallType::HallDown => 'hall_down: {
-            if let Some(cab_order) = find_cab_order(eligible_orders.clone(), completed_order.cb.floor, CallType::HallDown) {
-                result.next = Some(cab_order);
-                break 'hall_down;
+
+        CallType::HallDown => {
+            if let Some(cab) = find_cab_order(eligible.clone(), completed.cb.floor, CallType::HallDown) {
+                result.next = Some(cab);
+            } else {
+                match should_change_direction(eligible.first().cloned(), completed.cb.floor, CallType::HallDown) {
+                    Some(true) => result.next = Some(Order {
+                        cb: CallButton { floor: completed.cb.floor, call: CallType::HallUp },
+                        elev_idx: completed.elev_idx,
+                    }),
+                    Some(false) => {
+                        result.next = eligible.first().cloned();
+                        result.clear = Some(Order {
+                            cb: CallButton { floor: completed.cb.floor, call: CallType::HallDown },
+                            elev_idx: completed.elev_idx,
+                        });
+                    }
+                    None => {}
+                }
             }
-
-            match should_change_direction(eligible_orders.first().cloned(), completed_order.cb.floor, CallType::HallDown) {
-                Some(true) => {
-                    result.next = Some(Order {
-                        cb: CallButton { floor: completed_order.cb.floor, call: CallType::HallUp },
-                        elev_idx: completed_order.elev_idx,
-                    });
-                }
-                Some(false) => {
-                    result.next = eligible_orders.first().cloned();
-                    result.clear = Some(Order {
-                        cb: CallButton { floor: completed_order.cb.floor, call: CallType::HallDown },
-                        elev_idx: completed_order.elev_idx,
-                    });
-                }
-                None => (),
-            };
         }
+
         CallType::Cab => {
-            if let Some(order) = eligible_orders.first().cloned() {
-                result.next = Some(order.clone());
-                if order.cb.floor > completed_order.cb.floor {
-                    result.clear = Some(Order {
-                        cb: CallButton { floor: completed_order.cb.floor, call: CallType::HallUp },
-                        elev_idx: completed_order.elev_idx,
-                    });
-                } else if order.cb.floor < completed_order.cb.floor {
-                    result.clear = Some(Order {
-                        cb: CallButton { floor: completed_order.cb.floor, call: CallType::HallDown },
-                        elev_idx: completed_order.elev_idx,
-                    });
-                }
+            if let Some(order) = eligible.first().cloned() {
+                result.clear = Some(Order {
+                    cb: CallButton {
+                        floor: completed.cb.floor,
+                        call: if order.cb.floor > completed.cb.floor { CallType::HallUp } else { CallType::HallDown },
+                    },
+                    elev_idx: completed.elev_idx,
+                });
+                result.next = Some(order);
             }
         }
     }
 
-    // see if there are any orders on the way to selected order
     if result.next.is_some() {
-        let elev_idx = completed_order.elev_idx;
         let order = find_closest_order(
             result.next.as_ref().unwrap().clone(),
-            eligible_orders.clone(),
-            completed_order,
+            eligible,
+            completed.clone(),
         );
-        orders.retain(|item| item != &order);
-        result.next = Some(order.clone());
-        current_orders.insert(elev_idx, Some(order));
+        orders.retain(|o| o != &order);
+        current_orders.insert(completed.elev_idx, Some(order.clone()));
+        result.next = Some(order);
     }
+
     result
 }
 
-// ---------- PURE FUNCTIONS ----------
 
 fn elevator_may_take_order(elev_idx: usize, order: &Order) -> bool {
     order.cb.call != CallType::Cab || order.elev_idx == elev_idx
 }
 
-fn get_eligible_orders(orders: &VecDeque<Order>, completed_order: Order) -> Vec<Order> {
+fn get_eligible_orders(orders: &VecDeque<Order>, completed: Order) -> Vec<Order> {
     orders
         .iter()
-        .filter(|order| elevator_may_take_order(completed_order.elev_idx, order))
+        .filter(|o| elevator_may_take_order(completed.elev_idx, o))
         .cloned()
         .collect()
 }
@@ -408,50 +395,33 @@ fn designate_busy_idle(
     current_orders: &HashMap<usize, Option<Order>>,
     order: Order,
 ) -> (Vec<usize>, Vec<usize>) {
-    let busy_elevs: Vec<usize> = alive_elevs
-        .iter()
-        .copied()
+    let busy: Vec<usize> = alive_elevs.iter().copied()
         .filter(|&i| current_orders.get(&i).and_then(|o| o.as_ref()).is_some())
         .collect();
-    let free_elevs: Vec<usize> = alive_elevs
-        .iter()
-        .copied()
-        .filter(|&i| !busy_elevs.contains(&i))
+    let idle: Vec<usize> = alive_elevs.iter().copied()
+        .filter(|&i| !busy.contains(&i) && elevator_may_take_order(i, &order))
         .collect();
-    let idle_elevs: Vec<usize> = free_elevs
-        .iter()
-        .copied()
-        .filter(|&i| elevator_may_take_order(i, &order))
-        .collect();
-    (busy_elevs, idle_elevs)
+    (busy, idle)
 }
 
 fn rebuild_queue(orders: &mut VecDeque<Order>, order: Order) -> VecDeque<Order> {
-    let mut cab_orders: VecDeque<Order> = VecDeque::with_capacity(orders.len());
-    let mut other_orders: VecDeque<Order> = VecDeque::with_capacity(orders.len());
-    for order in orders.iter() {
-        if order.cb.call == CallType::Cab {
-            cab_orders.push_back(order.clone());
-        } else {
-            other_orders.push_back(order.clone());
-        }
-    }
-    let mut new_orders: VecDeque<Order> = VecDeque::with_capacity(orders.len());
-    new_orders.extend(cab_orders);
-    new_orders.extend(other_orders);
+    let mut cab_orders: VecDeque<Order> = orders.iter().filter(|o| o.cb.call == CallType::Cab).cloned().collect();
+    let mut hall_orders: VecDeque<Order> = orders.iter().filter(|o| o.cb.call != CallType::Cab).cloned().collect();
+    let mut new_orders = VecDeque::with_capacity(orders.len() + 1);
+    new_orders.append(&mut cab_orders);
+    new_orders.append(&mut hall_orders);
     new_orders.push_back(order);
     new_orders
 }
 
 fn order_on_the_way(elev_idx: usize, position: u8, curr_order: Order, new_order: Order) -> bool {
-    let new_call = new_order.cb.call;
     let new_floor = new_order.cb.floor;
-    let curr_call = curr_order.cb.call;
     let curr_floor = curr_order.cb.floor;
+    let new_call = new_order.cb.call;
+    let curr_call = curr_order.cb.call;
 
     let is_below = curr_floor <= new_floor && new_floor < position;
     let is_above = curr_floor >= new_floor && new_floor > position;
-
     let on_way_below = (new_call == CallType::HallDown && curr_call != CallType::HallUp) || new_call == CallType::Cab;
     let on_way_above = (new_call == CallType::HallUp && curr_call != CallType::HallDown) || new_call == CallType::Cab;
 
@@ -460,24 +430,14 @@ fn order_on_the_way(elev_idx: usize, position: u8, curr_order: Order, new_order:
 }
 
 fn find_closest_elev(
-    elev_candidates: Vec<usize>,
+    candidates: Vec<usize>,
     order: &Order,
     positions: &HashMap<usize, u8>,
 ) -> Option<usize> {
-    let mut closest_elev: Option<usize> = None;
-    let mut closest_distance: u8 = M + 1;
-
-    for elev_idx in elev_candidates {
-        if let Some(&position) = positions.get(&elev_idx) {
-            let dist = u8::abs_diff(position, order.cb.floor);
-            if dist < closest_distance {
-                closest_distance = dist;
-                closest_elev = Some(elev_idx);
-            }
-        }
-    }
-
-    closest_elev
+    candidates.into_iter()
+        .filter_map(|idx| positions.get(&idx).map(|&pos| (idx, pos)))
+        .min_by_key(|&(_, pos)| u8::abs_diff(pos, order.cb.floor))
+        .map(|(idx, _)| idx)
 }
 
 fn find_order_otw(
@@ -486,74 +446,39 @@ fn find_order_otw(
     current_orders: &HashMap<usize, Option<Order>>,
     positions: &HashMap<usize, u8>,
 ) -> Option<(usize, Order)> {
-    for elev_idx in busy_elevs {
-        if let Some(Some(curr_order)) = current_orders.get(&elev_idx).cloned() {
-            if let Some(&position) = positions.get(&elev_idx) {
-                if order_on_the_way(elev_idx, position, curr_order.clone(), order.clone()) {
-                    return Some((elev_idx, curr_order));
-                }
-            }
+    busy_elevs.into_iter().find_map(|idx| {
+        let curr = current_orders.get(&idx)?.as_ref()?.clone();
+        let &pos = positions.get(&idx)?;
+        if order_on_the_way(idx, pos, curr.clone(), order.clone()) {
+            Some((idx, curr))
+        } else {
+            None
         }
-    }
-    None
+    })
 }
 
-fn find_closest_order(order: Order, eligible_orders: Vec<Order>, completed_order: Order) -> Order {
-    let mut closest_order: Order = order.clone();
-    let mut closest_distance: u8 = M + 1;
-
-    for eligible_order in eligible_orders.iter() {
-        if order_on_the_way(
-            completed_order.elev_idx,
-            completed_order.cb.floor,
-            order.clone(),
-            eligible_order.clone(),
-        ) {
-            let dist = u8::abs_diff(completed_order.cb.floor, eligible_order.cb.floor);
-            if dist < closest_distance {
-                closest_distance = dist;
-                closest_order = eligible_order.clone();
-            }
-        }
-    }
-    println!("Closest order is {:?}", closest_order);
-    closest_order
+fn find_closest_order(target: Order, eligible: Vec<Order>, completed: Order) -> Order {
+    eligible.into_iter()
+        .filter(|o| order_on_the_way(completed.elev_idx, completed.cb.floor, target.clone(), o.clone()))
+        .min_by_key(|o| u8::abs_diff(completed.cb.floor, o.cb.floor))
+        .unwrap_or(target)
 }
 
 fn find_cab_order(orders: Vec<Order>, floor: u8, dir: CallType) -> Option<Order> {
-    for order in orders.iter() {
-        let is_cab = order.cb.call == CallType::Cab;
-        match dir {
-            CallType::HallUp => {
-                if order.cb.floor > floor && is_cab {
-                    return Some(order.clone());
-                }
-            }
-            CallType::HallDown => {
-                if order.cb.floor < floor && is_cab {
-                    return Some(order.clone());
-                }
-            }
-            CallType::Cab => (),
+    orders.into_iter().find(|o| {
+        o.cb.call == CallType::Cab && match dir {
+            CallType::HallUp   => o.cb.floor > floor,
+            CallType::HallDown => o.cb.floor < floor,
+            CallType::Cab      => false,
         }
-    }
-    None
+    })
 }
 
 fn should_change_direction(order: Option<Order>, floor: u8, dir: CallType) -> Option<bool> {
     let order = order?;
-    match dir {
-        CallType::HallUp => {
-            if order.cb.floor < floor {
-                return Some(true);
-            }
-        }
-        CallType::HallDown => {
-            if order.cb.floor > floor {
-                return Some(true);
-            }
-        }
-        CallType::Cab => (),
-    }
-    Some(false)
+    Some(match dir {
+        CallType::HallUp   => order.cb.floor < floor,
+        CallType::HallDown => order.cb.floor > floor,
+        CallType::Cab      => false,
+    })
 }
