@@ -15,7 +15,7 @@ pub mod transport;
 pub mod types;
 
 async fn init_socket(port: u16) -> Arc<UdpSocket> {
-    let addr = format!("localhost:{}", port);
+    let addr = format!("127.0.0.1:{}", port);
     Arc::new(UdpSocket::bind(addr).await.unwrap())
 }
 
@@ -37,7 +37,7 @@ pub async fn network_runner(
     // Heartbeat task runs independently so message processing can never delay pings
     let ping_addrs: Vec<String> = remote_ids
         .iter()
-        .map(|id| format!("localhost:{}", 30000 + *id as u16))
+        .map(|id| format!("127.0.0.1:{}", 30000 + *id as u16))
         .collect();
     tokio::spawn(heartbeat_runner(my_id, ping_addrs, ping_tx));
 
@@ -61,7 +61,7 @@ pub async fn network_runner(
                 peer_ids = alive.iter().filter(|&&id| id != my_id).cloned().collect();
                 peer_addrs = alive.iter()
                     .filter(|&&id| id != my_id)
-                    .map(|&id| (id, format!("localhost:{}", 21000 + id as u16)))
+                    .map(|&id| (id, format!("127.0.0.1:{}", 21000 + id as u16)))
                     .collect();
             }
 
@@ -87,7 +87,7 @@ pub async fn network_runner(
                             tokio::spawn(async move {
                                 // Each task gets its own socket to avoid recv_ack contention
                                 let socket = Arc::new(
-                                    UdpSocket::bind("localhost:0").await.unwrap()
+                                    UdpSocket::bind("127.0.0.1:0").await.unwrap()
                                 );
                                 let _ = send_reliable(socket, msg, addr, seq).await;
                                 let _ = ack_tx.send((seq, id));

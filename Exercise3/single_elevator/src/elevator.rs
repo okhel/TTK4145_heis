@@ -33,7 +33,7 @@ impl Elevator {
     async fn init() -> Result<Elevator> {
 
         let elevator = Self {
-            io: Elevio::init("localhost:15657", NUM_FLOORS)?,
+            io: Elevio::init("127.0.0.1:15657", NUM_FLOORS)?,
             elev_state: Mutex::new(ElevState::Stationary),
             door_state: false,
             last_floor: Mutex::new(None),

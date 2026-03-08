@@ -24,7 +24,7 @@ impl Elevator {
     async fn init(id: u8) -> Result<Elevator> {
 
         let elevator = Self {
-            io: Elevio::init(&format!("localhost:250{}",id), NUM_FLOORS)?,
+            io: Elevio::init(&format!("127.0.0.1:250{}",id), NUM_FLOORS)?,
             obstruction_state: Mutex::new(false),
             last_floor: Mutex::new(None),
             master_slave_state: Mutex::new(false),
