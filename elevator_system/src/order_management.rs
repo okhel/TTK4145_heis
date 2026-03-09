@@ -132,9 +132,6 @@ fn handle_event(
             let _ = network_tx.send(Msg::StateUpdate(ElevatorState {
                 id: local_id,
                 floor,
-                direction: Direction::Idle,
-                door_open: false,
-                cab_calls: vec![],
             }));
         }
 

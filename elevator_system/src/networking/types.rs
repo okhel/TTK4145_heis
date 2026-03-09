@@ -21,9 +21,6 @@ pub enum Direction {
 pub struct ElevatorState {
     pub id: u8,
     pub floor: u8,
-    pub direction: Direction,
-    pub door_open: bool,
-    pub cab_calls: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
