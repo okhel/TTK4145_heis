@@ -5,7 +5,7 @@ use tokio::sync::mpsc::{
 };
 
 use crate::elevator::elevio::poll::{CallButton, CallType};
-use crate::networking::types::{Direction, ElevatorState, Msg};
+use crate::networking::types::{ElevatorState, Msg};
 
 
 
@@ -113,16 +113,9 @@ fn handle_event(
     match event {
         // local buttonpress
        Event::ButtonPressed(cb) => {
-            if cb.call.is_hall() {
-                let order = Order { cb: cb.clone(), elev_idx: local_idx };
-                state.pending_acks.insert(cb.clone(), order);
-                let _ = network_tx.send(Msg::NewHallCall { from: local_id, call: cb });
-            } else {
-                // cab calls are local so dont need ack 
-                let order = Order { cb: cb.clone(), elev_idx: local_idx };
-                let _ = call_light_tx.send((cb, true));
-                try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
-            }
+            let order = Order { cb: cb.clone(), elev_idx: local_idx };
+            state.pending_acks.insert(cb.clone(), order);
+            let _ = network_tx.send(Msg::NewHallCall { from: local_id, call: cb });
         }
 
         // local floor update
@@ -137,9 +130,7 @@ fn handle_event(
 
         // local order complete
         Event::OrderCompleted(cb) => {
-            if cb.call.is_hall() {
-                let _ = network_tx.send(Msg::HallCallDone { from: local_id, call: cb.clone() });
-            }
+            let _ = network_tx.send(Msg::HallCallDone { from: local_id, call: cb.clone() });
             let order = Order { cb: cb.clone(), elev_idx: local_idx };
             complete_and_reassign(order, state, call_assign_tx, call_light_tx, local_idx);
         }
