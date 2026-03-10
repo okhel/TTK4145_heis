@@ -47,12 +47,13 @@ fn msg_to_event(msg: Msg) -> Option<Event> {
     }
 }
 
+// TODO: add some master logic to only let master assign orders, maybe add a Role in the ManagerState
 struct ManagerState {
     orders: VecDeque<Order>,
     positions: HashMap<usize, u8>,
     current_orders: HashMap<usize, Option<Order>>,
     alive_elevs: Vec<usize>,
-    pending_acks: HashMap<CallButton, Order>,
+    pending_acks: HashMap<CallButton, Order>
 }
 
 impl ManagerState {
@@ -64,31 +65,6 @@ impl ManagerState {
             alive_elevs: Vec::new(),
             pending_acks: HashMap::new(),
         }
-    }
-}
-
-fn is_master(local_idx: usize, alive_elevs: &[usize]) -> bool {
-    alive_elevs.iter().min().copied() == Some(local_idx)
-}
-
-fn reassign_unassigned(
-    state: &mut ManagerState,
-    call_assign_tx: &UTx<CallButton>,
-    network_tx: &UTx<Msg>,
-    local_idx: usize,
-) {
-    // Collect orders that no alive elevator is currently working on.
-    let assigned: HashSet<Order> = state.alive_elevs.iter()
-        .filter_map(|i| state.current_orders.get(i)?.as_ref().cloned())
-        .collect();
-
-    let unassigned: Vec<Order> = state.orders.iter()
-        .filter(|o| !assigned.contains(o))
-        .cloned()
-        .collect();
-
-    for order in unassigned {
-        try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
     }
 }
 
@@ -107,18 +83,17 @@ pub async fn order_manager(
     let mut state = ManagerState::new();
 
     loop {
-        let role = if is_master(local_idx, &state.alive_elevs) { "MASTER" } else { "SLAVE" };
-        println!("\n-\n[{}] Orders: {:?}\nCurrent orders: {:?}", role, state.orders, state.current_orders);
+        println!("\n-\nOrders: {:?}\nCurrent orders: {:?}", state.orders, state.current_orders);
 
         let event = tokio::select! {
-            Some(cb)          = call_request_rx.recv()  => Event::ButtonPressed(cb),
-            Some(floor)       = update_floor_rx.recv()   => Event::FloorReached(floor),
-            Some(cb)          = call_complete_rx.recv()  => Event::OrderCompleted(cb),
-            Some(msg)         = network_rx.recv()        => match msg_to_event(msg) {
+            Some(cb)       = call_request_rx.recv() => Event::ButtonPressed(cb),
+            Some(floor)    = update_floor_rx.recv()  => Event::FloorReached(floor),
+            Some(cb)       = call_complete_rx.recv()  => Event::OrderCompleted(cb),
+            Some(msg)      = network_rx.recv()        => match msg_to_event(msg) {
                 Some(e) => e,
                 None    => continue,
             },
-            Some((_seq, msg)) = ack_complete_rx.recv()  => Event::AckReceived(msg),
+            Some((_seq, msg)) = ack_complete_rx.recv() => Event::AckReceived(msg),
             else => panic!("All channels closed"),
         };
 
@@ -136,9 +111,8 @@ fn handle_event(
     network_tx: &UTx<Msg>,
 ) {
     match event {
-        // local button press
-        Event::ButtonPressed(cb) => {
-            // Every node records the pending ack for its own button presses.
+        // local buttonpress
+       Event::ButtonPressed(cb) => {
             let order = Order { cb: cb.clone(), elev_idx: local_idx };
             state.pending_acks.insert(cb.clone(), order);
             let _ = network_tx.send(Msg::NewHallCall { from: local_id, call: cb });
@@ -158,48 +132,23 @@ fn handle_event(
         Event::OrderCompleted(cb) => {
             let _ = network_tx.send(Msg::HallCallDone { from: local_id, call: cb.clone() });
             let order = Order { cb: cb.clone(), elev_idx: local_idx };
-
-            // clear local state unconditionally.
-            let cab_order = Order {
-                cb: CallButton { floor: order.cb.floor, call: CallType::Cab },
-                elev_idx: order.elev_idx,
-            };
-            state.orders.retain(|o| o != &order);
-            state.orders.retain(|o| o != &cab_order);
-            state.current_orders.insert(order.elev_idx, None);
-            println!("Cleared order {:?}", order);
-
-            // only master decides and broadcasts the next assignment.
-            if is_master(local_idx, &state.alive_elevs) {
-                complete_and_reassign(order, state, call_assign_tx, call_light_tx, network_tx, local_idx);
-            } else {
-                // still turn off the lights for the completed order.
-                let _ = call_light_tx.send((cb.clone(), false));
-                let _ = call_light_tx.send((CallButton { floor: cb.floor, call: CallType::Cab }, false));
-            }
+            complete_and_reassign(order, state, call_assign_tx, call_light_tx, &network_tx, local_idx);
         }
 
-        // peer button press
+        // peer pressed a hall button
         Event::PeerButtonPressed { from, call } => {
             let order = Order { cb: call, elev_idx: from as usize };
-            if is_master(local_idx, &state.alive_elevs) {
-                try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
-            } else {
-                if !state.orders.iter().any(|o| o == &order) {
-                    state.orders = rebuild_queue(&mut state.orders, order);
-                }
-            }
+            try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
         }
 
+        // master assign call to me 
         Event::PeerAssigned { to, call } => {
-            let order = Order { cb: call.clone(), elev_idx: to as usize };
-            state.current_orders.insert(to as usize, Some(order));
-
             if to == local_id {
                 let _ = call_assign_tx.send(call);
             }
         }
 
+        // peer completed hall call
         Event::PeerOrderCompleted { from, call } => {
             let order = Order { cb: call.clone(), elev_idx: from as usize };
             let cab_order = Order {
@@ -210,45 +159,30 @@ fn handle_event(
             state.orders.retain(|o| o != &cab_order);
             state.current_orders.insert(from as usize, None);
             let _ = call_light_tx.send((call, false));
-
-            if is_master(local_idx, &state.alive_elevs) {
-                complete_and_reassign(order, state, call_assign_tx, call_light_tx, network_tx, local_idx);
-            }
         }
 
+        // peer state update
         Event::PeerStateUpdate(peer_state) => {
             let idx = peer_state.id as usize;
-            let was_master_before = is_master(local_idx, &state.alive_elevs);
-
             if peer_state.floor != u8::MAX {
+                // u8::MAX used to mean offline, so only update position if not offline
                 state.positions.insert(idx, peer_state.floor);
-                state.current_orders.entry(idx).or_insert(None);
             } else {
                 state.positions.remove(&idx);
-                if let Some(Some(rescued)) = state.current_orders.get(&idx) {
-                    state.orders.push_front(rescued.clone());
+                if let Some(Some(order)) = state.current_orders.get(&idx) {
+                    state.orders.push_front(order.clone());
                 }
                 state.current_orders.insert(idx, None);
             }
-
             state.alive_elevs = state.positions.keys().copied().collect();
-
-            let is_master_now = is_master(local_idx, &state.alive_elevs);
-            if !was_master_before && is_master_now {
-                println!("Became master — reassigning unassigned orders");
-                reassign_unassigned(state, call_assign_tx, network_tx, local_idx);
-            }
         }
 
+        // got an acked message
         Event::AckReceived(msg) => {
             if let Msg::NewHallCall { call, .. } = msg {
                 if let Some(order) = state.pending_acks.remove(&call) {
                     let _ = call_light_tx.send((call, true));
-                    if is_master(local_idx, &state.alive_elevs) {
-                        try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
-                    } else if !state.orders.iter().any(|o| o == &order) {
-                        state.orders = rebuild_queue(&mut state.orders, order);
-                    }
+                    try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
                 }
             }
         }
@@ -256,7 +190,7 @@ fn handle_event(
 }
 
 
-
+// helpers
 fn try_assign_new(
     order: Order,
     state: &mut ManagerState,
@@ -292,8 +226,16 @@ fn complete_and_reassign(
     network_tx: &UTx<Msg>,
     local_idx: usize,
 ) {
-    let result = assign_next_order(order.clone(), &mut state.orders, &mut state.current_orders);
+    let cab_order = Order {
+        cb: CallButton { floor: order.cb.floor, call: CallType::Cab },
+        elev_idx: order.elev_idx,
+    };
+    state.orders.retain(|o| o != &order);
+    state.orders.retain(|o| o != &cab_order);
+    state.current_orders.insert(order.elev_idx, None);
+    println!("Cleared order {:?}", order);
 
+    let result = assign_next_order(order.clone(), &mut state.orders, &mut state.current_orders);
     if let Some(ref next) = result.next {
         if next.elev_idx == local_idx {
             let _ = call_assign_tx.send(next.cb.clone());
@@ -305,10 +247,6 @@ fn complete_and_reassign(
         }
     }
 
-    let cab_order = Order {
-        cb: CallButton { floor: order.cb.floor, call: CallType::Cab },
-        elev_idx: order.elev_idx,
-    };
     let mut to_clear: HashSet<Order> = HashSet::from([order, cab_order]);
     if let Some(clear) = result.clear {
         to_clear.insert(clear);
@@ -319,8 +257,7 @@ fn complete_and_reassign(
 }
 
 
-// ── Pure functions ────────────────────────────────────────────────────────────
-
+// pure functions
 fn assign_new_orders(
     order: Order,
     orders: &mut VecDeque<Order>,
@@ -433,6 +370,7 @@ fn assign_next_order(
 
     result
 }
+
 
 fn elevator_may_take_order(elev_idx: usize, order: &Order) -> bool {
     order.cb.call != CallType::Cab || order.elev_idx == elev_idx
