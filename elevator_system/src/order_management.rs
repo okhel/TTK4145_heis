@@ -132,7 +132,7 @@ fn handle_event(
         Event::OrderCompleted(cb) => {
             let _ = network_tx.send(Msg::HallCallDone { from: local_id, call: cb.clone() });
             let order = Order { cb: cb.clone(), elev_idx: local_idx };
-            complete_and_reassign(order, state, call_assign_tx, call_light_tx, local_idx);
+            complete_and_reassign(order, state, call_assign_tx, call_light_tx, &network_tx, local_idx);
         }
 
         // peer pressed a hall button
@@ -223,6 +223,7 @@ fn complete_and_reassign(
     state: &mut ManagerState,
     call_assign_tx: &UTx<CallButton>,
     call_light_tx: &UTx<(CallButton, bool)>,
+    network_tx: &UTx<Msg>,
     local_idx: usize,
 ) {
     let cab_order = Order {
@@ -238,6 +239,11 @@ fn complete_and_reassign(
     if let Some(ref next) = result.next {
         if next.elev_idx == local_idx {
             let _ = call_assign_tx.send(next.cb.clone());
+        } else if next.cb.call.is_hall() {
+            let _ = network_tx.send(Msg::AssignHallCall {
+                to: next.elev_idx as u8,
+                call: next.cb.clone(),
+            });
         }
     }
 
