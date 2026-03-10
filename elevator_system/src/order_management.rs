@@ -18,8 +18,10 @@ fn msg_to_event(msg: Msg) -> Option<Event> {
         Msg::HallCallDone { from, call } => Some(Event::PeerOrderCompleted { from, call }),
         Msg::StateUpdate(state)          => Some(Event::PeerStateUpdate(state)),
         Msg::AssignHallCall { to, call } => Some(Event::PeerAssigned { to, call }),
-        Msg::WorldState { .. }           => None,
-        Msg::Heartbeat                   => None,
+        Msg::WorldState { .. }           => None,         // might be outdated, remove if so 
+        Msg::Heartbeat                   => None,         // order mgmt doesn't need to know about heartbeats
+        Msg::OrdersQueue { orders }         => Some(Event::OrdersQueue(orders)),
+        Msg::AssignOrders { orders}         => Some(Event::AssignOrders { orders }),
     }
 }
 
@@ -159,6 +161,19 @@ fn handle_event(
                 if let Some(order) = state.pending_acks.remove(&call) {
                     let _ = call_light_tx.send((call, true));
                     try_assign_new(order, state, call_assign_tx, network_tx, local_idx);
+                }
+            }
+        }
+
+        Event::OrdersQueue(orders) => {
+            state.orders.extend(orders);
+        }
+
+        Event::AssignOrders { orders } => {
+            for order in orders {
+                if order.elev_idx == local_idx {
+                    // assumed this msg means this elevator should perform the orders, if not you can instead add it to current_orders directly maybe
+                    let _ = call_assign_tx.send(order.cb.clone());    
                 }
             }
         }
