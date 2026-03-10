@@ -5,6 +5,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{
     Mutex, mpsc::UnboundedReceiver as URx, mpsc::UnboundedSender as UTx,
     mpsc::unbounded_channel as uc,
+    broadcast::{Receiver as BcRx},
 };
 use tokio::time::{self, Duration};
 
@@ -28,7 +29,7 @@ pub async fn network_runner(
     // pings out to master_slave module
     ping_tx: UTx<u8>,
     // alive list from master_slave module
-    mut alive_rx: URx<Vec<u8>>,
+    mut alive_rx: BcRx<Vec<u8>>,
     // ack notification
     ack_complete_tx: UTx<(u32, Msg)>,
 ) {
@@ -55,7 +56,7 @@ pub async fn network_runner(
     loop {
         tokio::select! {
             // receive role updates from master_slave
-            Some(alive) = alive_rx.recv() => {
+            Ok(alive) = alive_rx.recv() => {
                 master_id = alive.first().copied();
                 is_master = master_id == Some(my_id);
                 peer_ids = alive.iter().filter(|&&id| id != my_id).cloned().collect();

@@ -1,52 +1,139 @@
-use std::collections::HashMap;
+use tokio::sync::{
+    mpsc::UnboundedReceiver as URx,
+    broadcast::{Sender as BcTx},
+};
+use tokio::time::{self, Duration};
+use std::{collections::BTreeMap, env, process::Command};
 
-use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
-use tokio::time::{self, Duration, Instant};
 
-const PEER_TIMEOUT: Duration = Duration::from_millis(3000);
+pub async fn store_online_elevators(
+    local_id: u8,
+    elevs_alive_tx: BcTx<Vec<u8>>,
+    mut ping_received_rx: URx<u8>,
+) {
+    let mut online_elevators: BTreeMap<u8, time::Instant> = BTreeMap::new();
+    let timeout_duration = Duration::from_millis(5000);
+    let debounce_duration = Duration::from_secs(1);
 
-pub async fn master_check(local_id: u8, mut ping_rx: URx<u8>, elevs_alive_tx: UTx<Vec<u8>>) {
-    let mut peer_last_seen: HashMap<u8, Instant> = HashMap::new();
-    let mut check_interval = time::interval(Duration::from_millis(1000));
+    let mut debounce_deadline: Option<time::Instant> = None;
 
     loop {
         tokio::select! {
-            Some(peer_id) = ping_rx.recv() => {
-                let is_new = !peer_last_seen.contains_key(&peer_id);
-                peer_last_seen.insert(peer_id, Instant::now());
-                if is_new {
-                    let alive = store_alive_elevators(local_id, &peer_last_seen);
-                    let master = alive[0];
-                    println!("Peer {} connected | alive: {:?} | master: {}, I am {}",
-                        peer_id, alive, master,
-                        if master == local_id { "MASTER" } else { "SLAVE" });
-                    let _ = elevs_alive_tx.send(alive);
+            Some(received_id) = ping_received_rx.recv() => {
+                let now = time::Instant::now();
+                
+                if online_elevators.insert(received_id, now).is_none() {
+                    debounce_deadline = Some(now + debounce_duration);
                 }
             }
-            _ = check_interval.tick() => {
-                let before = peer_last_seen.len();
-                peer_last_seen.retain(|_, last| last.elapsed() < PEER_TIMEOUT);
-                if peer_last_seen.len() != before {
-                    let alive = store_alive_elevators(local_id, &peer_last_seen);
-                    let master = alive[0];
-                    println!("Peer(s) timed out | alive: {:?} | master: {}, I am {}",
-                        alive, master,
-                        if master == local_id { "MASTER" } else { "SLAVE" });
-                    let _ = elevs_alive_tx.send(alive);
+
+            _ = time::sleep(Duration::from_millis(500)) => {
+                let now = time::Instant::now();
+                let before_len = online_elevators.len();
+
+                online_elevators.insert(local_id, now);
+
+                online_elevators.retain(|_, last_seen| {
+                    now.duration_since(*last_seen) < timeout_duration
+                });
+
+                if online_elevators.len() != before_len {
+                    debounce_deadline = Some(now + debounce_duration);
                 }
+            }
+
+            // Debounce trigger
+            _ = async {
+                if let Some(deadline) = debounce_deadline {
+                    time::sleep_until(deadline).await;
+                }
+            }, if debounce_deadline.is_some() => {
+                elevs_alive_tx.send(online_elevators.keys().cloned().collect()).unwrap();
+                println!("Online elevators: {:?}", online_elevators.keys());
+                debounce_deadline = None;
             }
         }
     }
 }
 
-fn store_alive_elevators(local_id: u8, peers: &HashMap<u8, Instant>) -> Vec<u8> {
-    let mut alive: Vec<u8> = vec![local_id];
-    alive.extend(
-        peers
-            .iter()
-            .filter(|(_, last)| last.elapsed() < PEER_TIMEOUT)
-            .map(|(&id, _)| id),
-    );
-    alive.sort();
-    alive
+
+
+pub const USER: &str = "MAC"; // "MAC" or "LAB"
+
+pub async fn kill_instance(local_id: u8, kill_id: u16) {
+    time::sleep(time::Duration::from_secs(5)).await;
+    if local_id == 19 {
+        if USER == "MAC" {
+            let cmd =format!(r#"kill $(lsof -i :250{kill_id} | awk 'NR>1 && $1!="SimElevat" {{print $2}}')"#);
+            let _ = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .status();
+        } 
+        else if USER == "LAB" {
+            let user = "student";
+            let host = format!("10.100.23.{}", kill_id);
+            let password = &env::var("PASSWORD").expect("PASSWORD must be set"); // SSH-passord
+            let remote_command = "kill -9 $(lsof -t -i :30000)";
+
+            let status = Command::new("sshpass")
+                .args([
+                    "-p", password,
+                    "ssh", &format!("{}@{}", user, host),
+                    &format!("bash -lc '{}'", remote_command),
+                ])
+                .status()
+                .expect("Failed to execute SSH command");
+                
+            if status.success() {
+                println!("Successfully killed process on {}", host);
+            } else {
+                eprintln!("Failed to kill process on {}", host);
+            }
+        }
+    }
+}
+
+pub async fn start_instance(local_id: u8, start_id: u16) {
+    if local_id == 19 {
+        if USER == "MAC" {
+            let current_dir = env::current_dir().unwrap();
+            let shell_cmd =format!("cd {} && cargo run {}", current_dir.display(), start_id);
+            let apple_script = format!(
+                r#"tell application "iTerm"
+                    create window with default profile
+                    tell current session of current window
+                        write text "{}"
+                    end tell
+                end tell"#,
+            shell_cmd
+            );
+
+            let _ = Command::new("osascript")
+            .arg("-e")
+            .arg(apple_script)
+            .status(); 
+        } 
+        else if USER == "LAB" {
+            let user = "student";
+            let host = format!("10.100.23.{}", start_id);
+            let password = &env::var("PASSWORD").expect("PASSWORD must be set"); // SSH-passord
+            let remote_cmd = format!("elevatorserver --port 30000 & cd ~/sanntid10; ~/.cargo/bin/cargo run {}", start_id);
+
+            let status = Command::new("sshpass")
+                .args([
+                    "-p", password,
+                    "ssh", &format!("{}@{}", user, host),
+                    &format!("bash -lc '{}'", remote_cmd),
+                ])
+                .status()
+            .expect("Failed to execute SSH command");
+
+            if status.success() {
+                println!("Successfully started process on {}", host);
+            } else {
+                eprintln!("Failed to start process on {}", host);
+            }
+        }
+    }
 }

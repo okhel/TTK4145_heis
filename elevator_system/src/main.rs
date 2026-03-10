@@ -1,7 +1,7 @@
 use std::env;
 use std::io;
 
-use tokio::sync::mpsc::unbounded_channel as uc;
+use tokio::{sync::{mpsc::unbounded_channel as uc, broadcast as bc}};
 
 use elevator::elevio::poll::CallButton;
 use networking::types::Msg;
@@ -10,14 +10,9 @@ pub mod elevator;
 pub mod master_slave;
 pub mod networking;
 pub mod order_management;
-pub mod process;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    if process::is_backup() {
-        process::run_as_backup();
-        return Ok(());
-    }
 
     let local_id: u8 = env::args().last().unwrap().parse().unwrap();
     let mut ids = vec![19, 20, 21];
@@ -39,7 +34,10 @@ async fn main() -> io::Result<()> {
     let (network_outbox_tx, network_outbox_rx) = uc::<Msg>();
     let (ping_tx, ping_rx) = uc::<u8>();
     let (ack_complete_tx, ack_complete_rx) = uc::<(u32, Msg)>();
-    let (elevs_alive_tx, elevs_alive_rx) = uc::<Vec<u8>>();
+
+
+    let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(2);
+    let mgmt_elevs_alive_rx = elevs_alive_tx.subscribe();
 
     let elevator_task = tokio::spawn(async move {
         elevator::elevator_runner(
@@ -60,7 +58,7 @@ async fn main() -> io::Result<()> {
             network_inbox_rx,
             network_outbox_tx,
             ping_tx,
-            elevs_alive_rx,
+            net_elevs_alive_rx,
             ack_complete_tx,
         )
         .await;
@@ -82,8 +80,13 @@ async fn main() -> io::Result<()> {
     });
 
     let master_slave_task = tokio::spawn(async move {
-        master_slave::master_check(local_id, ping_rx, elevs_alive_tx).await;
+        master_slave::store_online_elevators(local_id, elevs_alive_tx, ping_rx).await;
     });
+
+      //. let restart_task = tokio::spawn(async move {
+    //     kill_instance(local_id, 20).await;
+    //     start_instance(local_id, 20).await;
+    // });
 
     let _ = tokio::join!(elevator_task, network_task, order_task, master_slave_task);
     Ok(())
