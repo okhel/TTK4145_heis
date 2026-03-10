@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::elevator::elevio::poll::CallButton;
+use crate::order_management::types::Order;
 
 // constants
 
@@ -10,23 +11,10 @@ pub const NUM_FLOORS: u8 = 4;
 
 // core types
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Direction {
-    Up,
-    Down,
-    Idle,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ElevatorState {
     pub id: u8,
     pub floor: u8,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Role {
-    Master,
-    Slave { master_id: u8 },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -39,6 +27,11 @@ pub enum Msg {
     // master to slave
     AssignHallCall { to: u8, call: CallButton },
     WorldState { assignments: Vec<(CallButton, u8)> },
+
+
+
+    OrdersQueue { orders: Vec<Order> },
+    AssignOrders { orders: Vec<Order> },
 
     // both
     Heartbeat,

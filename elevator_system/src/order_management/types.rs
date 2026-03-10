@@ -26,4 +26,6 @@ pub enum Event {
     PeerStateUpdate(ElevatorState),
     PeerAssigned { to: u8, call: CallButton },
     AckReceived(Msg),
+    OrdersQueue(Vec<Order>),
+    AssignOrders { orders: Vec<Order> },
 }
