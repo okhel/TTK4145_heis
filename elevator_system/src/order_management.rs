@@ -126,9 +126,14 @@ fn handle_event(
 
         // Slaves queue the orders they receive
         Event::QueueOrders { orders } => {
+            // skip duplicate orders
             for order in orders {
-                if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.clone().cb, true)); }
-                state.orders.push_back(order);
+                if !state.orders.contains(&order) {
+                    state.orders.push_back(order.clone());
+                }
+                if is_mine(order.clone(), local_idx) {
+                    let _ = call_light_tx.send((order.cb, true));
+                }
             }
         }
 
@@ -204,7 +209,16 @@ fn handle_event(
                 });
             }
             println!("I'm {:?}", &state.role);
-            // TODO: If an elevator dies
+
+            // if new elevators come online, master sends orders and states to all slaves
+            for elev in alive_elevs {
+                if elev != local_id && state.role == Role::Master {
+                    let orders_to_send: Vec<Order> = state.orders.iter().cloned().chain(state.current_orders.values().filter_map(|o| o.clone())).collect();
+                    let states_to_send: Vec<ElevatorState> = state.positions.iter().map(|(id, floor)| ElevatorState { id: *id as u8, floor: *floor }).collect();
+                    let _ = network_tx.send(Msg::QueueOrders { orders: orders_to_send });
+                    let _ = network_tx.send(Msg::StateUpdate { states: states_to_send });
+                }
+            }
         }
     }
 }
