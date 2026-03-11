@@ -25,7 +25,7 @@ pub enum Event {
     StateUpdate { states: Vec<ElevatorState> },
     RequestOrder { order: Order },
     QueueOrders { orders: Vec<Order> },
-    AssignOrder { order: Order },
+    AssignOrders { orders: Vec<Order> },
     CompleteOrder { order: Order },
     ClearOrders { orders: Vec<Order> },
     AlivesUpdate { alive_elevs: Vec<u8> },

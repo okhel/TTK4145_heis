@@ -18,7 +18,7 @@ fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
     match msg {
         Msg::RequestOrder { order }                  => if role == &Role::Master { Some(Event::RequestOrder { order }) } else { None },
         Msg::QueueOrders { orders }             => Some(Event::QueueOrders { orders }),
-        Msg::AssignOrder { order }                   => Some(Event::AssignOrder { order }),
+        Msg::AssignOrders { orders }                   => Some(Event::AssignOrders { orders }),
         Msg::CompleteOrder { order }                 => Some(Event::CompleteOrder { order }),
         Msg::ClearOrders { orders }             => Some(Event::ClearOrders { orders }),
         Msg::StateUpdate { states }     => match role {
@@ -114,7 +114,7 @@ fn handle_event(
                     state.current_orders.insert(order_elev_idx, Some(order.clone()));
                     match order_elev_idx == local_idx {
                         true => { let _ = call_assign_tx.send(order.cb.clone()); }
-                        false => { let _ = network_tx.send(Msg::AssignOrder { order: Order { cb: order.cb.clone(), elev_idx: order_elev_idx } }); }
+                        false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] }); }
                     }
                 }
                 else {
@@ -126,17 +126,24 @@ fn handle_event(
 
         // Slaves queue the orders they receive
         Event::QueueOrders { orders } => {
+            // skip duplicate orders
             for order in orders {
-                if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.clone().cb, true)); }
-                state.orders.push_back(order);
+                if !state.orders.contains(&order) {
+                    state.orders.push_back(order.clone());
+                }
+                if is_mine(order.clone(), local_idx) {
+                    let _ = call_light_tx.send((order.cb, true));
+                }
             }
         }
 
-        Event::AssignOrder { order } => {
-            state.current_orders.insert(order.elev_idx, Some(order.clone()));
-            if order.elev_idx == local_idx {
-                println!("Elev {:?} completing order: {:?}", local_idx, order);
-                let _ = call_assign_tx.send(order.cb.clone());
+        Event::AssignOrders { orders } => {
+            for order in orders {
+                state.current_orders.insert(order.elev_idx, Some(order.clone()));
+                if order.elev_idx == local_idx {
+                    println!("Elev {:?} completing order: {:?}", local_idx, order);
+                    let _ = call_assign_tx.send(order.cb.clone());
+                }
             }
         }
 
@@ -155,7 +162,7 @@ fn handle_event(
                         state.current_orders.insert(next_order.clone().unwrap().elev_idx, next_order.clone());
                         match next_order.clone().unwrap().elev_idx == local_idx {
                             true => { let _ = call_assign_tx.send(next_order.as_ref().unwrap().cb.clone()); }
-                            false => { let _ = network_tx.send(Msg::AssignOrder { order: Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: order.elev_idx } }); }
+                            false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: order.elev_idx }] }); }
                         }
                         println!("{}", format!("Found new order for elevator {:?}: {:?}\n ", next_order.clone().unwrap().elev_idx, next_order.clone().unwrap()).green().bold());
                     }
@@ -202,7 +209,16 @@ fn handle_event(
                 });
             }
             println!("I'm {:?}", &state.role);
-            // TODO: If an elevator dies
+
+            // if new elevators come online, master sends orders and states to all slaves
+            for elev in alive_elevs {
+                if elev != local_id && state.role == Role::Master {
+                    let orders_to_send: Vec<Order> = state.orders.iter().cloned().chain(state.current_orders.values().filter_map(|o| o.clone())).collect();
+                    let states_to_send: Vec<ElevatorState> = state.positions.iter().map(|(id, floor)| ElevatorState { id: *id as u8, floor: *floor }).collect();
+                    let _ = network_tx.send(Msg::QueueOrders { orders: orders_to_send });
+                    let _ = network_tx.send(Msg::StateUpdate { states: states_to_send });
+                }
+            }
         }
     }
 }

@@ -117,45 +117,6 @@ impl Elevator {
             }
         }
     }
-
-    pub async fn master_slave_control(&self, mut elevs_alive_rx: URx<Vec<u8>>, master_notify_tx: UTx<Vec<u8>>) {
-        // let delay = sleep(Duration::from_secs(4));
-        // tokio::pin!(delay);
-        // let mut saved_elevs_alive: Vec<u8> = Vec::new();
-        // loop {
-        //     if let Some(elevs_alive) = elevs_alive_rx.recv().await {
-        //         println!("Received alive elevators: {:?}, at time {}", elevs_alive, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-        //         select! {
-        //             _ = &mut delay => {
-        //                 saved_elevs_alive = elevs_alive.clone();
-        //                 println!("Eeeeeeeeer here: ");
-        //             }
-        //             new_message = elevs_alive_rx.recv() => {
-        //                 if let Some(new_elevs_alive) = new_message {
-        //                     println!("Er heeeeeeeeeeer");
-        //                     saved_elevs_alive = new_elevs_alive.clone();
-        //                 }
-        //             }
-        //         }
-
-        //         println!("Received alive elevators: {:?}, at time {}", saved_elevs_alive, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-
-        //         if saved_elevs_alive.iter().all(|&id| self.id <= id) {
-        //             *self.master_slave_state.lock().unwrap() = true;
-        //         } else {
-        //             *self.master_slave_state.lock().unwrap() = false;
-        //         }
-        //         let _ = master_notify_tx.send((saved_elevs_alive.clone()));
-        //         sleep(Duration::from_secs(1)).await;
-        //     }
-        // }
-
-        loop {
-        if let Some(elevs_alive) = elevs_alive_rx.recv().await {
-            println!("Received aliiiiiiiiiiiive elevators: {:?}, at time {}", elevs_alive, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-        }
-    }
-    }
 }
 
 // ---------- PURE FUNCTIONS ----------
