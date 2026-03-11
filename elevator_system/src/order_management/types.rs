@@ -7,6 +7,12 @@ pub struct Order {
     pub elev_idx: usize,
 }
 
+#[derive(Eq, PartialEq, Debug)]
+pub enum Role {
+    Master,
+    Slave
+}
+
 pub struct NextOrderResult {
     pub next: Option<Order>,
     pub clear: Option<Order>,
@@ -15,17 +21,14 @@ pub struct NextOrderResult {
 pub const M: u8 = 3; // floors
 
 pub enum Event {
-    // from local elevator 
-    ButtonPressed(CallButton),
-    FloorReached(u8),
-    OrderCompleted(CallButton),
-
-    // from network peers
-    PeerButtonPressed { from: u8, call: CallButton },
-    PeerOrderCompleted { from: u8, call: CallButton },
-    PeerStateUpdate(ElevatorState),
-    PeerAssigned { to: u8, call: CallButton },
+    StateShare { states: Vec<ElevatorState> },
+    StateUpdate { states: Vec<ElevatorState> },
+    RequestOrder { order: Order },
+    QueueOrders { orders: Vec<Order> },
+    AssignOrder { order: Order },
+    CompleteOrder { order: Order },
+    ClearOrders { orders: Vec<Order> },
+    AlivesUpdate { alive_elevs: Vec<u8> },
+    
     AckReceived(Msg),
-    OrdersQueue(Vec<Order>),
-    AssignOrders { orders: Vec<Order> },
 }

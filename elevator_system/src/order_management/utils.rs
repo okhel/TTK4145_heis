@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use crate::order_management::types::{NextOrderResult, Order};
 use crate::elevator::elevio::poll::{CallButton, CallType};
-
+use colored::Colorize;
 
 
 pub fn assign_new_orders(
@@ -20,20 +20,21 @@ pub fn assign_new_orders(
         designate_busy_idle(alive_elevs.to_vec(), current_orders, order.clone());
 
     if let Some((elev_idx, paused_order)) =
-        find_order_otw(busy_elevs, &order, current_orders, positions)
+        find_order_otw(busy_elevs.clone(), &order, current_orders, positions)
     {
-        println!("Found order on the way to {:?}", paused_order);
         orders.push_front(paused_order);
         orders.retain(|o| o != &order);
         current_orders.insert(elev_idx, Some(order));
         return Some(elev_idx);
     }
+    else if busy_elevs.len() > 0 { println!("Order is not on the way for any elevator {:?}, Current orders: {:?}, \n", order, current_orders); }
 
-    if let Some(closest) = find_closest_elev(available_elevs, &order, positions) {
+    if let Some(closest) = find_closest_elev(available_elevs.clone(), &order, positions) {
         current_orders.insert(closest, Some(order.clone()));
         orders.retain(|o| o != &order);
         return Some(closest);
     }
+    else if available_elevs.len() > 0 { println!("No available elevator may take order {:?}, Available elevators: {:?}, \n", order, available_elevs); }
 
     None
 }
@@ -91,13 +92,18 @@ pub fn assign_next_order(
 
         CallType::Cab => {
             if let Some(order) = eligible.first().cloned() {
-                result.clear = Some(Order {
-                    cb: CallButton {
-                        floor: completed.cb.floor,
-                        call: if order.cb.floor > completed.cb.floor { CallType::HallUp } else { CallType::HallDown },
-                    },
-                    elev_idx: completed.elev_idx,
-                });
+                if order.cb.floor > completed.cb.floor {
+                    result.clear = Some(Order {
+                        cb: CallButton { floor: completed.cb.floor, call: CallType::HallUp },
+                        elev_idx: completed.elev_idx,
+                    });
+                }
+                else if order.cb.floor < completed.cb.floor {
+                    result.clear = Some(Order {
+                        cb: CallButton { floor: completed.cb.floor, call: CallType::HallDown },
+                        elev_idx: completed.elev_idx,
+                    });
+                }
                 result.next = Some(order);
             }
         }
@@ -113,6 +119,7 @@ pub fn assign_next_order(
         current_orders.insert(completed.elev_idx, Some(order.clone()));
         result.next = Some(order);
     }
+    else if eligible.len() > 0 { println!("{}", format!("Could not assign next order after {:?}, although eligible orders exist: {:?}, \n", completed, eligible).red().bold()); }
 
     result
 }

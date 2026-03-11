@@ -19,20 +19,13 @@ pub struct ElevatorState {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Msg {
-    // slave to master
-    StateUpdate(ElevatorState),
-    NewHallCall { from: u8, call: CallButton },
-    HallCallDone { from: u8, call: CallButton },
 
-    // master to slave
-    AssignHallCall { to: u8, call: CallButton },
-    WorldState { assignments: Vec<(CallButton, u8)> },
-
-
-
-    OrdersQueue { orders: Vec<Order> },
-    AssignOrders { orders: Vec<Order> },
-
-    // both
+    RequestOrder { order: Order },
+    QueueOrders { orders: Vec<Order> },
+    AssignOrder { order: Order },
+    CompleteOrder { order: Order },
+    ClearOrders { orders: Vec<Order> },
+    StateUpdate { states: Vec<ElevatorState> },
+    
     Heartbeat,
 }

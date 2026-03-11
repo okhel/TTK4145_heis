@@ -80,7 +80,7 @@ impl Elevator {
                                 sleep(Duration::from_millis(100)).await;
                             }
                             self.io.door_light(false);
-                            println!("Sending order complete message for {:?}", target_call);
+                            // println!("Sending order complete message for {:?}", target_call);
                             let _ = call_complete_tx.send(target_call.clone());
                         }
                     }

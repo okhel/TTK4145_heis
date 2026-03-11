@@ -75,6 +75,7 @@ async fn main() -> io::Result<()> {
             network_inbox_tx,
             network_outbox_rx,
             ack_complete_rx,
+            mgmt_elevs_alive_rx
         )
         .await
     });
