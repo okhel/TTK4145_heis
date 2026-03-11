@@ -137,7 +137,7 @@ fn handle_event(
 
         Event::AssignOrders { orders } => {
             for order in orders {
-                state.current_orders.insert(order.elev_idx, Some(order.clone()));
+                // state.current_orders.insert(order.elev_idx, Some(order.clone()));
                 if order.elev_idx == local_idx {
                     println!("Elev {:?} completing order: {:?}", local_idx, order);
                     let _ = call_assign_tx.send(order.cb.clone());
@@ -175,6 +175,8 @@ fn handle_event(
 
         Event::ClearOrders { orders } => {
             clear_these_orders(orders, state, local_idx, call_light_tx);
+            println!("Orders existing in slaves: {:?}", state.orders);
+            println!("Orders existing in slaves: {:?}", state.orders);
         }
 
         // got a state update from an elevator
@@ -237,7 +239,12 @@ fn try_assign_next_order(order: Order, state: &mut ManagerState) -> (Option<Orde
 
 fn clear_these_orders(completed_orders: Vec<Order>, state: &mut ManagerState, local_idx: usize, call_light_tx: &UTx<(CallButton, bool)>) {
     for order in completed_orders {
-        state.orders.retain(|o| o != &order);
+        if order.cb.call == CallType::Cab {
+            state.orders.retain(|o: &Order| o != &order);
+        }
+        else {
+            state.orders.retain(|o| o.cb != order.cb);
+        }
         if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.cb, false)); }
     }
 }
