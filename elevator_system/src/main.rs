@@ -11,6 +11,8 @@ pub mod master_slave;
 pub mod networking;
 pub mod order_management;
 
+pub const USER: &str = "MAC"; // "MAC" or "LAB"
+
 #[tokio::main]
 async fn main() -> io::Result<()> {
 
@@ -19,6 +21,7 @@ async fn main() -> io::Result<()> {
 
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
+    let restart_remote_ids = remote_ids.clone();
     println!("I'm {}", local_id);
 
     // Elevator channels (CallButton-based)
@@ -38,6 +41,7 @@ async fn main() -> io::Result<()> {
 
     let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(2);
     let mgmt_elevs_alive_rx = elevs_alive_tx.subscribe();
+    let restart_elevs_alive_rx = elevs_alive_tx.subscribe();
 
     let elevator_task = tokio::spawn(async move {
         elevator::elevator_runner(
@@ -83,12 +87,15 @@ async fn main() -> io::Result<()> {
     let master_slave_task = tokio::spawn(async move {
         master_slave::store_online_elevators(local_id, elevs_alive_tx, ping_rx).await;
     });
+    let restart_task = tokio::spawn(async move {
+        master_slave::restart_elevators(local_id, restart_remote_ids, restart_elevs_alive_rx).await;
+    });
 
       //. let restart_task = tokio::spawn(async move {
     //     kill_instance(local_id, 20).await;
     //     start_instance(local_id, 20).await;
     // });
 
-    let _ = tokio::join!(elevator_task, network_task, order_task, master_slave_task);
+    let _ = tokio::join!(elevator_task, network_task, order_task, master_slave_task, restart_task);
     Ok(())
 }
