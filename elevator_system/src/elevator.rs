@@ -84,7 +84,7 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
             elev.set_lights(call_light_assign_rx).await;
         }
     });
-
+    
     let _ = tokio::join!(motor_control_task, io_sensing_task, io_light_task);
     Ok(())
 

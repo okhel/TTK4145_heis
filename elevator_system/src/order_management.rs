@@ -196,6 +196,9 @@ fn handle_event(
         }
 
         Event::AlivesUpdate { alive_elevs } => {
+            for el in &alive_elevs {
+                println!("From mgmt: {}", *el);
+            }
             match alive_elevs.iter().min() == Some(&local_id) {
                 true => { state.role = Role::Master; }
                 false => { state.role = Role::Slave; }

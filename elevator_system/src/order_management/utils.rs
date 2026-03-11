@@ -121,6 +121,10 @@ pub fn assign_next_order(
     }
     else if eligible.len() > 0 { println!("{}", format!("Could not assign next order after {:?}, although eligible orders exist: {:?}, \n", completed, eligible).red().bold()); }
 
+    // overwrite result to give order to the relevant elevator, not the one that registered the order 
+    if let Some(ref mut order) = result.next {
+        order.elev_idx = completed.elev_idx;
+    }
     result
 }
 
