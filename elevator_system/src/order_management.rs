@@ -18,7 +18,7 @@ fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
     match msg {
         Msg::RequestOrder { order }                  => if role == &Role::Master { Some(Event::RequestOrder { order }) } else { None },
         Msg::QueueOrders { orders }             => Some(Event::QueueOrders { orders }),
-        Msg::AssignOrder { order }                   => Some(Event::AssignOrder { order }),
+        Msg::AssignOrders { orders }                   => Some(Event::AssignOrders { orders }),
         Msg::CompleteOrder { order }                 => Some(Event::CompleteOrder { order }),
         Msg::ClearOrders { orders }             => Some(Event::ClearOrders { orders }),
         Msg::StateUpdate { states }     => match role {
@@ -114,7 +114,7 @@ fn handle_event(
                     state.current_orders.insert(order_elev_idx, Some(order.clone()));
                     match order_elev_idx == local_idx {
                         true => { let _ = call_assign_tx.send(order.cb.clone()); }
-                        false => { let _ = network_tx.send(Msg::AssignOrder { order: Order { cb: order.cb.clone(), elev_idx: order_elev_idx } }); }
+                        false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] }); }
                     }
                 }
                 else {
@@ -132,11 +132,13 @@ fn handle_event(
             }
         }
 
-        Event::AssignOrder { order } => {
-            state.current_orders.insert(order.elev_idx, Some(order.clone()));
-            if order.elev_idx == local_idx {
-                println!("Elev {:?} completing order: {:?}", local_idx, order);
-                let _ = call_assign_tx.send(order.cb.clone());
+        Event::AssignOrders { orders } => {
+            for order in orders {
+                state.current_orders.insert(order.elev_idx, Some(order.clone()));
+                if order.elev_idx == local_idx {
+                    println!("Elev {:?} completing order: {:?}", local_idx, order);
+                    let _ = call_assign_tx.send(order.cb.clone());
+                }
             }
         }
 
@@ -155,7 +157,7 @@ fn handle_event(
                         state.current_orders.insert(next_order.clone().unwrap().elev_idx, next_order.clone());
                         match next_order.clone().unwrap().elev_idx == local_idx {
                             true => { let _ = call_assign_tx.send(next_order.as_ref().unwrap().cb.clone()); }
-                            false => { let _ = network_tx.send(Msg::AssignOrder { order: Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: order.elev_idx } }); }
+                            false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: order.elev_idx }] }); }
                         }
                         println!("{}", format!("Found new order for elevator {:?}: {:?}\n ", next_order.clone().unwrap().elev_idx, next_order.clone().unwrap()).green().bold());
                     }

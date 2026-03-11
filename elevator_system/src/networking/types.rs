@@ -22,7 +22,7 @@ pub enum Msg {
 
     RequestOrder { order: Order },
     QueueOrders { orders: Vec<Order> },
-    AssignOrder { order: Order },
+    AssignOrders { orders: Vec<Order> },
     CompleteOrder { order: Order },
     ClearOrders { orders: Vec<Order> },
     StateUpdate { states: Vec<ElevatorState> },
