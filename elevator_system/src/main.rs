@@ -91,11 +91,6 @@ async fn main() -> io::Result<()> {
         master_slave::restart_elevators(local_id, restart_remote_ids, restart_elevs_alive_rx).await;
     });
 
-      //. let restart_task = tokio::spawn(async move {
-    //     kill_instance(local_id, 20).await;
-    //     start_instance(local_id, 20).await;
-    // });
-
     let _ = tokio::join!(elevator_task, network_task, order_task, master_slave_task, restart_task);
     Ok(())
 }

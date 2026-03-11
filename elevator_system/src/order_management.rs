@@ -28,8 +28,6 @@ fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
         Msg::Heartbeat                   => None,
     }
 }
-
-// TODO: add some master logic to only let master assign orders, maybe add a Role in the ManagerState
 struct ManagerState {
     orders: VecDeque<Order>,
     positions: HashMap<usize, u8>,
@@ -210,9 +208,9 @@ fn handle_event(
             }
             println!("I'm {:?}", &state.role);
 
-            // if new elevators come online, master sends orders and states to all slaves
+            // if new elevators come online, all elevators sync their orders 
             for elev in alive_elevs {
-                if elev != local_id && state.role == Role::Master {
+                if elev != local_id {
                     let orders_to_send: Vec<Order> = state.orders.iter().cloned().chain(state.current_orders.values().filter_map(|o| o.clone())).collect();
                     let states_to_send: Vec<ElevatorState> = state.positions.iter().map(|(id, floor)| ElevatorState { id: *id as u8, floor: *floor }).collect();
                     let _ = network_tx.send(Msg::QueueOrders { orders: orders_to_send });

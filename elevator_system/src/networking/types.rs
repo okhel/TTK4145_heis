@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-
-use crate::elevator::elevio::poll::CallButton;
 use crate::order_management::types::Order;
 
 // constants
