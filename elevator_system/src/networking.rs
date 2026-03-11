@@ -3,15 +3,13 @@ use std::sync::Arc;
 
 use tokio::net::UdpSocket;
 use tokio::sync::{
-    Mutex,
-    mpsc::UnboundedReceiver as URx,
-    mpsc::UnboundedSender as UTx,
+    Mutex, mpsc::UnboundedReceiver as URx, mpsc::UnboundedSender as UTx,
     mpsc::unbounded_channel as uc,
     broadcast::{Receiver as BcRx},
 };
 use tokio::time::{self, Duration};
 
-use crate::networking::transport::{socket_reader, create_channels, send_reliable, recv_reliable};
+use crate::networking::transport::{recv_reliable, send_reliable};
 use crate::networking::types::Msg;
 
 pub mod transport;
@@ -25,19 +23,19 @@ async fn init_socket(port: u16) -> Arc<UdpSocket> {
 pub async fn network_runner(
     my_id: u8,
     remote_ids: Vec<u8>,
+    // message passing
     mut inbox: URx<Msg>,
     outbox: UTx<Msg>,
+    // pings out to master_slave module
     ping_tx: UTx<u8>,
+    // alive list from master_slave module
     mut alive_rx: BcRx<Vec<u8>>,
+    // ack notification
     ack_complete_tx: UTx<(u32, Msg)>,
 ) {
     let recv_socket = init_socket(21000 + my_id as u16).await;
 
-    // single socket reader
-    let (mut data_rx, _ack_rx, data_tx, ack_tx) = create_channels();
-    tokio::spawn(socket_reader(recv_socket.clone(), data_tx, ack_tx));
-
-    // Heartbeat task runs independently
+    // Heartbeat task runs independently so message processing can never delay pings
     let ping_addrs: Vec<String> = remote_ids
         .iter()
         .map(|id| format!("127.0.0.1:{}", 30000 + *id as u16))
@@ -53,11 +51,11 @@ pub async fn network_runner(
     // ACK tracking
     let pending_acks: Arc<Mutex<HashMap<u32, (HashSet<u8>, Msg)>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    let (peer_ack_tx, mut peer_ack_rx) = uc::<(u32, u8)>();
+    let (ack_tx, mut ack_rx) = uc::<(u32, u8)>();
 
     loop {
         tokio::select! {
-            // receive role updates
+            // receive role updates from master_slave
             Ok(alive) = alive_rx.recv() => {
                 master_id = alive.first().copied();
                 is_master = master_id == Some(my_id);
@@ -85,21 +83,15 @@ pub async fn network_runner(
                     for id in target_ids {
                         if let Some(addr) = peer_addrs.get(&id) {
                             let msg = msg.clone();
-                            let peer_ack_tx = peer_ack_tx.clone();
+                            let ack_tx = ack_tx.clone();
                             let addr: std::net::SocketAddr = addr.parse().unwrap();
-                            let send_seq = seq;
                             tokio::spawn(async move {
-                                // socket for sending
+                                // Each task gets its own socket to avoid recv_ack contention
                                 let socket = Arc::new(
                                     UdpSocket::bind("127.0.0.1:0").await.unwrap()
                                 );
-                                let (_, mut ack_rx, _, ack_tx) = create_channels();
-                                tokio::spawn(socket_reader(socket.clone(), 
-                                    { let (tx, _) = uc(); tx },
-                                    ack_tx,
-                                ));
-                                let _ = send_reliable(socket, msg, addr, send_seq, &mut ack_rx).await;
-                                let _ = peer_ack_tx.send((send_seq, id));
+                                let _ = send_reliable(socket, msg, addr, seq).await;
+                                let _ = ack_tx.send((seq, id));
                             });
                         }
                     }
@@ -108,7 +100,7 @@ pub async fn network_runner(
             }
 
             // track ACKs
-            Some((ack_seq, peer_id)) = peer_ack_rx.recv() => {
+            Some((ack_seq, peer_id)) = ack_rx.recv() => {
                 let mut map = pending_acks.lock().await;
                 let all_acked = if let Some((remaining, _)) = map.get_mut(&ack_seq) {
                     remaining.remove(&peer_id);
@@ -124,7 +116,7 @@ pub async fn network_runner(
             }
 
             // route incoming messages
-            Some((msg, _, _)) = recv_reliable(&mut data_rx) => {
+            Ok((msg, _, _)) = recv_reliable(&recv_socket) => {
                 let _ = outbox.send(msg);
             }
         }
