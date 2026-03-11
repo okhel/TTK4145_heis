@@ -33,6 +33,7 @@ struct ManagerState {
     positions: HashMap<usize, u8>,
     current_orders: HashMap<usize, Option<Order>>,
     alive_elevs: HashSet<usize>,
+    just_spawned: bool,
     pending_acks: HashMap<Order, Order>,
     role: Role,
     network_ready: bool,
@@ -45,6 +46,7 @@ impl ManagerState {
             positions: HashMap::new(),
             current_orders: HashMap::new(),
             alive_elevs: HashSet::new(),
+            just_spawned: true,
             pending_acks: HashMap::new(),
             role: Role::Slave,
             network_ready: false,
@@ -210,6 +212,10 @@ fn handle_event(
                 let _ = network_tx.send(Msg::StateUpdate {
                     states: vec![ElevatorState { id: local_id, floor }],
                 });
+                if state.just_spawned {
+                    state.just_spawned = false;
+                    let _ = network_tx.send(Msg::CompleteOrder { order: (Order { cb: CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab }, elev_idx: local_idx }) });
+                }
             }
             println!("I'm {:?}", &state.role);
 
