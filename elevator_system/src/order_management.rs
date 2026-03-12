@@ -4,7 +4,7 @@ use tokio::sync::{
     mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc},
     broadcast::Receiver as BcRx,
 };
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use crate::{
     elevator::elevio::poll::{CallButton, CallType},
@@ -88,6 +88,8 @@ pub async fn order_manager(
     ));
 
     let mut state = ManagerState::new(wd_reset_tx, wd_remove_tx);
+    let idle_timeout = Duration::from_secs(60);
+    let mut idle_deadline = Instant::now() + idle_timeout;
 
     loop {
         let event = tokio::select! {
@@ -101,10 +103,21 @@ pub async fn order_manager(
             },
             Some((_seq, msg)) = ack_complete_rx.recv() => Event::AckReceived(msg),
             Some(elev_idx)      = wd_expired_rx.recv() => Event::OrderTimeout { elev_idx },
+            _ = tokio::time::sleep_until(idle_deadline) => {
+                idle_deadline = Instant::now() + idle_timeout;
+                if let Some(&floor) = state.positions.get(&local_idx) {
+                    println!("{}", "Idle for 60 seconds -> kickstarting with cab completion".yellow());
+                    Event::CompleteOrder {
+                        order: Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx: local_idx },
+                    }
+                } else {
+                    continue;
+                }
+            },
             else => panic!("All channels closed"),
         };
 
-        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx);
+        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx, &mut idle_deadline, idle_timeout);
     }
 }
 
@@ -116,6 +129,8 @@ fn handle_event(
     call_assign_tx: &UTx<CallButton>,
     call_light_tx: &UTx<(CallButton, bool)>,
     network_tx: &UTx<Msg>,
+    idle_deadline: &mut Instant,
+    idle_timeout: Duration,
 ) {
     match event {
         // local buttonpress
@@ -132,7 +147,7 @@ fn handle_event(
                     update_current_orders(state, order.clone(), order_elev_idx);
                     // state.current_orders.insert(order_elev_idx, Some(order.clone()));
                     match order_elev_idx == local_idx {
-                        true => { let _ = call_assign_tx.send(order.cb.clone()); }
+                        true => { let _ = call_assign_tx.send(order.cb.clone()); *idle_deadline = Instant::now() + idle_timeout; }
                         false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] }); }
                     }
                 }
@@ -162,6 +177,7 @@ fn handle_event(
                 if order.elev_idx == local_idx {
                     println!("Elev {} assigned order: {}", local_idx, order);
                     let _ = call_assign_tx.send(order.cb.clone());
+                    *idle_deadline = Instant::now() + idle_timeout;
                 }
             }
         }
@@ -180,7 +196,7 @@ fn handle_event(
                         update_current_orders(state, next_order.clone().unwrap(), next_order.clone().unwrap().elev_idx);
                         // state.current_orders.insert(next_order.clone().unwrap().elev_idx, next_order.clone());
                         match next_order.clone().unwrap().elev_idx == local_idx {
-                            true => { let _ = call_assign_tx.send(next_order.as_ref().unwrap().cb.clone()); }
+                            true => { let _ = call_assign_tx.send(next_order.as_ref().unwrap().cb.clone()); *idle_deadline = Instant::now() + idle_timeout; }
                             false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: order.elev_idx }] }); }
                         }
                         println!("{}", format!("\nAssigned next order: {}", next_order.as_ref().unwrap()).green().bold());
