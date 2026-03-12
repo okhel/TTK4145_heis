@@ -10,6 +10,22 @@ pub enum CallType {
     Cab,
 }
 
+impl std::fmt::Display for CallType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallType::HallUp => write!(f, "HallUp"),
+            CallType::HallDown => write!(f, "HallDown"),
+            CallType::Cab => write!(f, "Cab"),
+        }
+    }
+}
+
+impl std::fmt::Display for CallButton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:<8} floor {}", self.call, self.floor)
+    }
+}
+
 impl CallType {
     pub fn from_u8(v: u8) -> CallType {
         match v {

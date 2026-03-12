@@ -160,7 +160,7 @@ fn handle_event(
             for order in orders {
                 // state.current_orders.insert(order.elev_idx, Some(order.clone()));
                 if order.elev_idx == local_idx {
-                    println!("Elev {:?} completing order: {:?}", local_idx, order);
+                    println!("Elev {} assigned order: {}", local_idx, order);
                     let _ = call_assign_tx.send(order.cb.clone());
                 }
             }
@@ -173,9 +173,8 @@ fn handle_event(
                 Role::Master => {
                     state.current_orders.remove(&order.elev_idx);
                     state.orders.retain(|o| o != &order);
+                    println!("{}", format!("Elev {} completed order: {}", order.elev_idx, order).blue().bold());
                     let _ = state.wd_remove_tx.send(order.elev_idx);
-                    println!("{}", format!("Elev {:?} completed order: {:?}", order.clone().elev_idx, order.clone()).blue().bold());
-                    println!("{}", format!("Current orders: {:?}", state.current_orders));
                     let (next_order, clear_orders) = try_assign_next_order(order.clone(), state);
                     if next_order.is_some() {
                         update_current_orders(state, next_order.clone().unwrap(), next_order.clone().unwrap().elev_idx);
@@ -184,9 +183,8 @@ fn handle_event(
                             true => { let _ = call_assign_tx.send(next_order.as_ref().unwrap().cb.clone()); }
                             false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: order.elev_idx }] }); }
                         }
-                        println!("{}", format!("Found new order for elevator {:?}: {:?}\n ", next_order.clone().unwrap().elev_idx, next_order.clone().unwrap()).green().bold());
+                        println!("{}", format!("\nAssigned next order: {}", next_order.as_ref().unwrap()).green().bold());
                     }
-                    else { println!("{}", format!("Could not assign next order after {:?}", order.clone()).red().bold()); }
                     if clear_orders.len() > 0 {
                         clear_these_orders(clear_orders.clone().into_iter().collect(), state, local_idx, call_light_tx);
                         let _ = network_tx.send(Msg::ClearOrders { orders: clear_orders.into_iter().collect() });
@@ -197,8 +195,7 @@ fn handle_event(
 
         Event::ClearOrders { orders } => {
             clear_these_orders(orders, state, local_idx, call_light_tx);
-            println!("Orders existing in slaves: {:?}", state.orders);
-            println!("Orders existing in slaves: {:?}", state.orders);
+            println!("Orders in queue: [{}]", state.orders.iter().map(|o| format!("{}", o)).collect::<Vec<_>>().join(", "));
         }
 
         // got a state update from an elevator
@@ -224,7 +221,7 @@ fn handle_event(
                 println!("{}", format!("Elev {} failed to complete in time", elev_idx).red().bold());
                 if let Some(Some(order)) = state.current_orders.remove(&elev_idx) {
                     state.orders.push_front(order.clone());
-                    println!("{}", format!("Order {:?} timed out, added to front of queue", order).yellow().bold());
+                    println!("{}", format!("Order timed out, queued: {}", order).yellow().bold());
                 }
             }
         }

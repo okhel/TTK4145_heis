@@ -7,6 +7,12 @@ pub struct Order {
     pub elev_idx: usize,
 }
 
+impl std::fmt::Display for Order {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}, elev {}", self.cb, self.elev_idx)
+    }
+}
+
 #[derive(Eq, PartialEq, Debug)]
 pub enum Role {
     Master,

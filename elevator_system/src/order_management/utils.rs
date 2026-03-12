@@ -27,14 +27,13 @@ pub fn assign_new_orders(
         current_orders.insert(elev_idx, Some(order));
         return Some(elev_idx);
     }
-    else if busy_elevs.len() > 0 { println!("Order is not on the way for any elevator {:?}, Current orders: {:?}, \n", order, current_orders); }
 
     if let Some(closest) = find_closest_elev(available_elevs.clone(), &order, positions) {
         current_orders.insert(closest, Some(order.clone()));
         orders.retain(|o| o != &order);
         return Some(closest);
     }
-    else if available_elevs.len() > 0 { println!("No available elevator may take order {:?}, Available elevators: {:?}, \n", order, available_elevs); }
+    else if available_elevs.len() > 0 { println!("No available elevator for: {}", order); }
 
     None
 }
@@ -119,7 +118,7 @@ pub fn assign_next_order(
         current_orders.insert(completed.elev_idx, Some(order.clone()));
         result.next = Some(order);
     }
-    else if eligible.len() > 0 { println!("{}", format!("Could not assign next order after {:?}, although eligible orders exist: {:?}, \n", completed, eligible).red().bold()); }
+    else if eligible.len() > 0 { println!("{}", format!("Could not assign next order after: {}, eligible: [{}]", completed, eligible.iter().map(|o| format!("{}", o)).collect::<Vec<_>>().join(", ")).red().bold()); }
 
     // overwrite result to give order to the relevant elevator, not the one that registered the order 
     if let Some(ref mut order) = result.next {
