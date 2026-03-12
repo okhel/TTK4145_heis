@@ -10,6 +10,7 @@ pub mod elevator;
 pub mod master_slave;
 pub mod networking;
 pub mod order_management;
+pub mod watchdog;
 
 pub const USER: &str = "MAC"; // "MAC" or "LAB"
 

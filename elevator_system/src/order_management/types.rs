@@ -31,4 +31,5 @@ pub enum Event {
     AlivesUpdate { alive_elevs: Vec<u8> },
     
     AckReceived(Msg),
+    OrderTimeout { elev_idx: usize },
 }
