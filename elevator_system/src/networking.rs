@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::UdpSocket;
@@ -7,7 +8,7 @@ use tokio::sync::{
     mpsc::unbounded_channel as uc,
     broadcast::{Receiver as BcRx},
 };
-use tokio::time::{self, Duration};
+use tokio::time::{self, Duration, Instant};
 
 use crate::networking::transport::{recv_reliable, send_reliable};
 use crate::networking::types::Msg;
@@ -15,9 +16,30 @@ use crate::networking::types::Msg;
 pub mod transport;
 pub mod types;
 
+const MAX_APP_RETRIES: u32 = 3;
+const DEDUP_WINDOW: Duration = Duration::from_secs(10);
+
 async fn init_socket(port: u16) -> Arc<UdpSocket> {
     let addr = format!("127.0.0.1:{}", port);
     Arc::new(UdpSocket::bind(addr).await.unwrap())
+}
+
+fn spawn_send_task(
+    msg: Msg,
+    addr: SocketAddr,
+    seq: u32,
+    peer_id: u8,
+    retry_count: u32,
+    ack_tx: UTx<(u32, u8)>,
+    fail_tx: UTx<(u32, u8, Msg, SocketAddr, u32)>,
+) {
+    tokio::spawn(async move {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        match send_reliable(socket, msg.clone(), addr, seq).await {
+            Ok(()) => { let _ = ack_tx.send((seq, peer_id)); }
+            Err(_) => { let _ = fail_tx.send((seq, peer_id, msg, addr, retry_count)); }
+        }
+    });
 }
 
 pub async fn network_runner(
@@ -52,6 +74,10 @@ pub async fn network_runner(
     let pending_acks: Arc<Mutex<HashMap<u32, (HashSet<u8>, Msg)>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (ack_tx, mut ack_rx) = uc::<(u32, u8)>();
+    let (fail_tx, mut fail_rx) = uc::<(u32, u8, Msg, SocketAddr, u32)>();
+
+    // Deduplication: track recently seen (seq, sender_addr) to ignore retransmissions
+    let mut seen_messages: HashMap<(u32, SocketAddr), Instant> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -82,17 +108,11 @@ pub async fn network_runner(
 
                     for id in target_ids {
                         if let Some(addr) = peer_addrs.get(&id) {
-                            let msg = msg.clone();
-                            let ack_tx = ack_tx.clone();
-                            let addr: std::net::SocketAddr = addr.parse().unwrap();
-                            tokio::spawn(async move {
-                                // Each task gets its own socket to avoid recv_ack contention
-                                let socket = Arc::new(
-                                    UdpSocket::bind("127.0.0.1:0").await.unwrap()
-                                );
-                                let _ = send_reliable(socket, msg, addr, seq).await;
-                                let _ = ack_tx.send((seq, id));
-                            });
+                            let addr: SocketAddr = addr.parse().unwrap();
+                            spawn_send_task(
+                                msg.clone(), addr, seq, id, 0,
+                                ack_tx.clone(), fail_tx.clone(),
+                            );
                         }
                     }
                     seq = seq.wrapping_add(1);
@@ -115,8 +135,46 @@ pub async fn network_runner(
                 }
             }
 
-            // route incoming messages
-            Ok((msg, _, _)) = recv_reliable(&recv_socket) => {
+            // handle send failures with app-level retry
+            Some((fail_seq, peer_id, msg, addr, retry_count)) = fail_rx.recv() => {
+                if retry_count < MAX_APP_RETRIES {
+                    eprintln!(
+                        "Retrying send for seq={fail_seq} to peer {peer_id} (app retry {}/{})",
+                        retry_count + 1, MAX_APP_RETRIES
+                    );
+                    spawn_send_task(
+                        msg, addr, fail_seq, peer_id, retry_count + 1,
+                        ack_tx.clone(), fail_tx.clone(),
+                    );
+                } else {
+                    eprintln!(
+                        "Permanent send failure for seq={fail_seq} to peer {peer_id} after {MAX_APP_RETRIES} app retries"
+                    );
+                    let mut map = pending_acks.lock().await;
+                    let all_done = if let Some((remaining, _)) = map.get_mut(&fail_seq) {
+                        remaining.remove(&peer_id);
+                        remaining.is_empty()
+                    } else {
+                        false
+                    };
+                    if all_done {
+                        if let Some((_, msg)) = map.remove(&fail_seq) {
+                            let _ = ack_complete_tx.send((fail_seq, msg));
+                        }
+                    }
+                }
+            }
+
+            // route incoming messages with deduplication
+            Ok((msg, msg_seq, sender_addr)) = recv_reliable(&recv_socket) => {
+                let now = Instant::now();
+                seen_messages.retain(|_, t| now.duration_since(*t) < DEDUP_WINDOW);
+
+                let key = (msg_seq, sender_addr);
+                if seen_messages.contains_key(&key) {
+                    continue;
+                }
+                seen_messages.insert(key, now);
                 let _ = outbox.send(msg);
             }
         }
