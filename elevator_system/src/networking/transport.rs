@@ -4,8 +4,8 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 
 const MAX_MSG_BYTES: usize = 65507;
-const ACK_TIMEOUT: Duration = Duration::from_millis(500);
-const MAX_RETRIES: u32 = 5;
+const ACK_TIMEOUT: Duration = Duration::from_millis(200);
+const MAX_RETRIES: u32 = 10;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Frame {
@@ -57,6 +57,8 @@ pub async fn recv_reliable(socket: &UdpSocket) -> std::io::Result<(Msg, u32, Soc
     }
 }
 
+const ACK_COPIES: usize = 3;
+
 async fn send_ack(
     socket: &UdpSocket,
     seq: u32,
@@ -68,7 +70,9 @@ async fn send_ack(
         msg: msg.clone(),
     };
     let payload = bincode::serialize(&frame).expect("serialize ack failed");
-    socket.send_to(&payload, addr).await?;
+    for _ in 0..ACK_COPIES {
+        socket.send_to(&payload, addr).await?;
+    }
     Ok(())
 }
 
