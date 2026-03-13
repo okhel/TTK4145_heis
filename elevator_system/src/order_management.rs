@@ -160,11 +160,11 @@ fn handle_event(
                             false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] }); }
                         }
                     }
+                    else {
+                        state.orders.push_back(order.clone());
+                    }
+                    let _ = network_tx.send(Msg::QueueOrders { orders: vec![order.clone()] });
                 }
-                else {
-                    state.orders.push_back(order.clone());
-                }
-                let _ = network_tx.send(Msg::QueueOrders { orders: vec![order.clone()] });
             }
         }
 

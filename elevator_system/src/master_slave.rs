@@ -4,6 +4,7 @@ use tokio::{sync::{
 }};
 use tokio::time::{self, Duration, Instant};
 use std::{collections::{BTreeMap, HashMap}, env, process::Command};
+use dotenv::dotenv;
 use crate::USER;
 
 pub async fn store_online_elevators(
@@ -104,7 +105,7 @@ pub async fn restart_elevators(
 
 pub fn kill_instance(kill_id: u8) {
     if USER == "MAC" {
-        let cmd =format!(r#"kill $(lsof -i :250{kill_id} | awk 'NR>1 && $1!="SimElevat" {{print $2}}')"#);
+        let cmd =format!("kill $(lsof -t -i :250{})", kill_id);
         let _ = Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -113,8 +114,8 @@ pub fn kill_instance(kill_id: u8) {
     else if USER == "LAB" {
         let user = "student";
         let host = format!("10.100.23.{}", kill_id);
-        let password = &env::var("PASSWORD").expect("PASSWORD must be set"); // SSH-passord
-        let remote_command = "kill -9 $(lsof -t -i :30000)";
+        let password = &load_password(); // SSH-passord
+        let remote_command = format!("kill -9 $(lsof -t -i :250{})",kill_id);
 
         let status = Command::new("sshpass")
             .args([
@@ -136,15 +137,22 @@ pub fn kill_instance(kill_id: u8) {
 pub fn start_instance(start_id: u8) {
     if USER == "MAC" {
         let current_dir = env::current_dir().unwrap();
-        let shell_cmd =format!("cd {} && cargo run {}", current_dir.display(), start_id);
+        let sim_cmd =format!("cd /Users/hanschristianlarsen/Documents/NTNU/semester6/Sanntidsprogrammering/simulator/Simulator-v2 && ./simElevatorServer --port 250{}", start_id);
+        let cargo_cmd =format!("cd {} && cargo run {}", current_dir.display(), start_id);
         let apple_script = format!(
             r#"tell application "iTerm"
                 create window with default profile
                 tell current session of current window
                     write text "{}"
                 end tell
+
+                create window with default profile
+                tell current session of current window
+                    write text "{}"
+                end tell
+
             end tell"#,
-        shell_cmd
+        sim_cmd, cargo_cmd
         );
 
         let _ = Command::new("osascript")
@@ -155,8 +163,22 @@ pub fn start_instance(start_id: u8) {
     else if USER == "LAB" {
         let user = "student";
         let host = format!("10.100.23.{}", start_id);
-        let password = &env::var("PASSWORD").expect("PASSWORD must be set"); // SSH-passord
-        let remote_cmd = format!("elevatorserver --port 30000 & cd ~/sanntid10; ~/.cargo/bin/cargo run {}", start_id);
+        let password = &load_password();
+
+        let kill_cmd = format!("pkill elevatorserver; pkill -f 'cargo run'");
+        let _ = Command::new("sshpass")
+            .args([
+                "-p", password,
+                "ssh", &format!("{}@{}", user, host),
+                &kill_cmd,
+            ])
+            .status();
+
+        let remote_cmd = format!(
+            "nohup elevatorserver --port 250{} > /tmp/elevserv.log 2>&1 & \
+             nohup ~/.cargo/bin/cargo run --manifest-path ~/sanntid10/Cargo.toml -- {} > /tmp/elevator.log 2>&1 &",
+            start_id, start_id
+        );
 
         let status = Command::new("sshpass")
             .args([
@@ -173,4 +195,9 @@ pub fn start_instance(start_id: u8) {
             eprintln!("Failed to start process on {}", host);
         }
     }
+}
+
+fn load_password() -> String {
+    dotenv().ok();  // Laster miljøvariabler fra .env-filen
+    env::var("PASSWORD").expect("PASSWORD must be set")
 }

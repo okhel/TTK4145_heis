@@ -18,7 +18,7 @@ pub const USER: &str = "MAC"; // "MAC" or "LAB"
 async fn main() -> io::Result<()> {
 
     let local_id: u8 = env::args().last().unwrap().parse().unwrap();
-    let mut ids = vec![19, 20, 21];
+    let mut ids = vec![19, 20];
 
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
