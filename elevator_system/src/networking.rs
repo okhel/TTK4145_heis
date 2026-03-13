@@ -34,13 +34,20 @@ fn spawn_send_task(
     msg: Msg,
     addr: SocketAddr,
     seq: u32,
+    my_id: u8,
     peer_id: u8,
     retry_count: u32,
     ack_tx: UTx<(u32, u8)>,
     fail_tx: UTx<(u32, u8, Msg, SocketAddr, u32)>,
 ) {
     tokio::spawn(async move {
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let socket = Arc::new( 
+            if USER == "MAC" {
+                UdpSocket::bind("127.0.0.1:0").await.unwrap()
+            } else {
+                UdpSocket::bind(format!("10.100.23.{}:0", my_id)).await.unwrap()
+            }
+    );
         match send_reliable(socket, msg.clone(), addr, seq).await {
             Ok(()) => { let _ = ack_tx.send((seq, peer_id)); }
             Err(_) => { let _ = fail_tx.send((seq, peer_id, msg, addr, retry_count)); }
@@ -137,25 +144,13 @@ pub async fn network_runner(
 
                     for id in target_ids {
                         if let Some(addr) = peer_addrs.get(&id) {
-                            let msg = msg.clone();
-                            let ack_tx = ack_tx.clone();
                             let addr: std::net::SocketAddr = addr.parse().unwrap();
-                            tokio::spawn(async move {
-                                // Each task gets its own socket to avoid recv_ack contention
-                                let socket = Arc::new(
-                                    if USER == "MAC" {
-                                        UdpSocket::bind("127.0.0.1:0").await.unwrap()
-                                    } else {
-                                        UdpSocket::bind(format!("10.100.23.{}:0", my_id)).await.unwrap()
-                                    }
-                                );
-                                let _ = send_reliable(socket, msg, addr, seq).await;
-                                let _ = ack_tx.send((seq, id));
-                            });
-                        }
+                            spawn_send_task(msg.clone(), addr, seq, my_id, id, 0, ack_tx.clone(), fail_tx.clone());
+                        };
                     }
                     seq = seq.wrapping_add(1);
-                } else {
+                }
+                else {
                     // No peers to send to, consider it immediately ACKed
                     let _ = ack_complete_tx.send((seq, msg));
                     seq = seq.wrapping_add(1);
@@ -186,7 +181,7 @@ pub async fn network_runner(
                         retry_count + 1, MAX_APP_RETRIES
                     );
                     spawn_send_task(
-                        msg, addr, fail_seq, peer_id, retry_count + 1,
+                        msg, addr, fail_seq, my_id, peer_id, retry_count + 1,
                         ack_tx.clone(), fail_tx.clone(),
                     );
                 } else {
