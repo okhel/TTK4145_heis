@@ -116,6 +116,10 @@ pub async fn network_runner(
                         }
                     }
                     seq = seq.wrapping_add(1);
+                } else {
+                    // No peers to send to, consider it immediately ACKed
+                    let _ = ack_complete_tx.send((seq, msg));
+                    seq = seq.wrapping_add(1);
                 }
             }
 
