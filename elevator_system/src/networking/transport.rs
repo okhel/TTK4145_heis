@@ -27,10 +27,10 @@ pub async fn send_reliable(
             Ok(Ok(())) => return Ok(()),
             Ok(Err(e)) => return Err(e),
             Err(_) => {
-                eprintln!(
-                    "ACK timeout for seq={seq}, attempt {}/{MAX_RETRIES}",
-                    attempt + 1
-                );
+                // eprintln!(
+                //     "ACK timeout for seq={seq}, attempt {}/{MAX_RETRIES}",
+                //     attempt + 1
+                // );
             }
         }
     }

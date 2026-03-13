@@ -37,7 +37,8 @@ async fn main() -> io::Result<()> {
     let (network_inbox_tx, network_inbox_rx) = uc::<Msg>();
     let (network_outbox_tx, network_outbox_rx) = uc::<Msg>();
     let (ping_tx, ping_rx) = uc::<u8>();
-    let (ack_complete_tx, ack_complete_rx) = uc::<(u32, Msg)>();
+    let (net_ack_complete_tx, ack_complete_rx) = uc::<(u32, Msg)>();
+    let order_ack_complete_tx = net_ack_complete_tx.clone();
 
 
     let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(2);
@@ -64,7 +65,7 @@ async fn main() -> io::Result<()> {
             network_outbox_tx,
             ping_tx,
             net_elevs_alive_rx,
-            ack_complete_tx,
+            net_ack_complete_tx,
         )
         .await;
     });
@@ -80,6 +81,7 @@ async fn main() -> io::Result<()> {
             network_inbox_tx,
             network_outbox_rx,
             ack_complete_rx,
+            order_ack_complete_tx,
             mgmt_elevs_alive_rx
         )
         .await

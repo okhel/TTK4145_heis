@@ -72,6 +72,7 @@ pub async fn order_manager(
     network_tx: UTx<Msg>,
     mut network_rx: URx<Msg>,
     mut ack_complete_rx: URx<(u32, Msg)>,
+    ack_complete_tx: UTx<(u32, Msg)>,
     mut mgmt_elevs_alive_rx: BcRx<Vec<u8>>,
 ) {
     let local_idx = local_id as usize;
@@ -117,7 +118,7 @@ pub async fn order_manager(
             else => panic!("All channels closed"),
         };
 
-        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx, &mut idle_deadline, idle_timeout);
+        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx, &ack_complete_tx, &mut idle_deadline, idle_timeout);
     }
 }
 
@@ -129,6 +130,7 @@ fn handle_event(
     call_assign_tx: &UTx<CallButton>,
     call_light_tx: &UTx<(CallButton, bool)>,
     network_tx: &UTx<Msg>,
+    ack_complete_tx: &UTx<(u32, Msg)>,
     idle_deadline: &mut Instant,
     idle_timeout: Duration,
 ) {
@@ -140,15 +142,17 @@ fn handle_event(
 
         // Master received acks from all on order request
         Event::AckReceived(msg) => {
-            if let Msg::RequestOrder { order } = msg && state.role == Role::Master {
-                state.pending_acks.remove(&order);
-                if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.clone().cb, true)); }
-                if let Some(order_elev_idx) = try_assign_new_order(order.clone(), state) {
-                    update_current_orders(state, order.clone(), order_elev_idx);
-                    // state.current_orders.insert(order_elev_idx, Some(order.clone()));
-                    match order_elev_idx == local_idx {
-                        true => { let _ = call_assign_tx.send(order.cb.clone()); *idle_deadline = Instant::now() + idle_timeout; }
-                        false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] }); }
+            if let Msg::RequestOrder { order } = msg {
+                if state.role == Role::Master {
+                    state.pending_acks.remove(&order);
+                    if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.clone().cb, true)); }
+                    if let Some(order_elev_idx) = try_assign_new_order(order.clone(), state) {
+                        update_current_orders(state, order.clone(), order_elev_idx);
+                        // state.current_orders.insert(order_elev_idx, Some(order.clone()));
+                        match order_elev_idx == local_idx {
+                            true => { let _ = call_assign_tx.send(order.cb.clone()); *idle_deadline = Instant::now() + idle_timeout; }
+                            false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] }); }
+                        }
                     }
                 }
                 else {
@@ -236,13 +240,14 @@ fn handle_event(
             if state.role == Role::Master {
                 println!("{}", format!("Elev {} failed to complete in time", elev_idx).red().bold());
                 if let Some(Some(order)) = state.current_orders.remove(&elev_idx) {
-                    state.orders.push_front(order.clone());
                     println!("{}", format!("Order timed out, queued: {}", order).yellow().bold());
+                    let _ = ack_complete_tx.send((0, Msg::RequestOrder { order: order.clone() }));
                 }
             }
         }
 
         Event::AlivesUpdate { alive_elevs } => {
+            state.alive_elevs = alive_elevs.iter().map(|id| *id as usize).collect();
             for el in &alive_elevs {
                 println!("From mgmt: {}", *el);
             }
@@ -259,8 +264,15 @@ fn handle_event(
                     state.just_spawned = false;
                     let _ = network_tx.send(Msg::CompleteOrder { order: (Order { cb: CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab }, elev_idx: local_idx }) });
                 }
+                println!("I'm {:?}", &state.role);
+
+                // if I'm not assigned an order, assign myself a cab order to kickstart the system
+                if state.current_orders.get(&local_idx).is_none() {
+                    let pseudo_cb = CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab };
+                    let _ = call_assign_tx.send(pseudo_cb); *idle_deadline = Instant::now() + idle_timeout; 
+                }
             }
-            println!("I'm {:?}", &state.role);
+            
 
             // if new elevators come online, all elevators sync their orders 
             for elev in alive_elevs {
