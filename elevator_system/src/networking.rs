@@ -142,10 +142,10 @@ pub async fn network_runner(
             // handle send failures with app-level retry
             Some((fail_seq, peer_id, msg, addr, retry_count)) = fail_rx.recv() => {
                 if retry_count < MAX_APP_RETRIES {
-                    eprintln!(
-                        "Retrying send for seq={fail_seq} to peer {peer_id} (app retry {}/{})",
-                        retry_count + 1, MAX_APP_RETRIES
-                    );
+                    // eprintln!(
+                    //     "Retrying send for seq={fail_seq} to peer {peer_id} (app retry {}/{})",
+                    //     retry_count + 1, MAX_APP_RETRIES
+                    // );
                     spawn_send_task(
                         msg, addr, fail_seq, peer_id, retry_count + 1,
                         ack_tx.clone(), fail_tx.clone(),

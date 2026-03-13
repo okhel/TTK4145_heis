@@ -89,6 +89,12 @@ pub async fn order_manager(
     ));
 
     let mut state = ManagerState::new(wd_reset_tx, wd_remove_tx);
+
+    let init_floor = update_floor_rx.recv().await
+        .expect("Failed to receive initial floor from elevator");
+    state.positions.insert(local_idx, init_floor);
+    println!("{}", format!("Elev {} ready at floor {}", local_idx, init_floor).green().bold());
+
     let idle_timeout = Duration::from_secs(60);
     let mut idle_deadline = Instant::now() + idle_timeout;
 
@@ -162,10 +168,9 @@ fn handle_event(
             }
         }
 
-        // Slaves queue the orders they receive
         Event::QueueOrders { orders } => {
-            // skip duplicate orders
             for order in orders {
+                // println!("Queueing order: {}", order);
                 if !state.orders.contains(&order) {
                     state.orders.push_back(order.clone());
                 }
@@ -191,9 +196,21 @@ fn handle_event(
             match state.role {
                 Role::Slave => { let _ = network_tx.send(Msg::CompleteOrder { order }); }
                 Role::Master => {
-                    state.current_orders.remove(&order.elev_idx);
+                    if let Some(current_order) = state.current_orders.get(&order.elev_idx) {
+                        if *current_order == Some(order.clone()) {
+                            state.current_orders.remove(&order.elev_idx);
+                            println!("{}", format!("Elev {} completed order: {}", order.elev_idx, order).blue().bold());
+                        }
+                        else {
+                            if let Some(order_to_queue) = current_order.clone() {
+                                state.orders.push_back(order_to_queue);
+                            }
+                        }
+                    }
                     state.orders.retain(|o| o != &order);
-                    println!("{}", format!("Elev {} completed order: {}", order.elev_idx, order).blue().bold());
+
+                    // println!("Orders: {:?}", state.orders);
+                    // println!("Current orders: {:?}", state.current_orders);
                     let _ = state.wd_remove_tx.send(order.elev_idx);
                     let (next_order, clear_orders) = try_assign_next_order(order.clone(), state);
                     if next_order.is_some() {
@@ -215,7 +232,7 @@ fn handle_event(
 
         Event::ClearOrders { orders } => {
             clear_these_orders(orders, state, local_idx, call_light_tx);
-            println!("Orders in queue: [{}]", state.orders.iter().map(|o| format!("{}", o)).collect::<Vec<_>>().join(", "));
+            // println!("Orders in queue: [{}]", state.orders.iter().map(|o| format!("{}", o)).collect::<Vec<_>>().join(", "));
         }
 
         // got a state update from an elevator
@@ -247,42 +264,63 @@ fn handle_event(
         }
 
         Event::AlivesUpdate { alive_elevs } => {
-            state.alive_elevs = alive_elevs.iter().map(|id| *id as usize).collect();
-            for el in &alive_elevs {
-                println!("From mgmt: {}", *el);
-            }
+            let new_set: HashSet<usize> = alive_elevs.iter().map(|id| *id as usize).collect();
+            let old_set = state.alive_elevs.clone();
+            let newly_alive: Vec<usize> = new_set.difference(&old_set).copied().collect();
+            let lost: Vec<usize> = old_set.difference(&new_set).copied().collect();
+
+            state.alive_elevs = new_set.clone();
+            state.network_ready = true;
+
+            let master_died = old_set.iter().min() < new_set.iter().min();
             match alive_elevs.iter().min() == Some(&local_id) {
                 true => { state.role = Role::Master; }
                 false => { state.role = Role::Slave; }
             }
-            state.network_ready = true;
-            if let Some(&floor) = state.positions.get(&local_idx) {
-                let _ = network_tx.send(Msg::StateUpdate {
-                    states: vec![ElevatorState { id: local_id, floor }],
-                });
-                if state.just_spawned {
-                    state.just_spawned = false;
-                    let _ = network_tx.send(Msg::CompleteOrder { order: (Order { cb: CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab }, elev_idx: local_idx }) });
-                }
-                println!("I'm {:?}", &state.role);
+            println!("I'm {:?}", &state.role);
 
-                // if I'm not assigned an order, assign myself a cab order to kickstart the system
-                if state.current_orders.get(&local_idx).is_none() {
-                    let pseudo_cb = CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab };
-                    let _ = call_assign_tx.send(pseudo_cb); *idle_deadline = Instant::now() + idle_timeout; 
+
+            let pseudo_cb = CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab };
+            if state.role == Role::Master {
+                if master_died {
+                    // Send pseudo cab order to new master
+                    println!("Master died");
+
+                    // Assign pseudo cab order to all elevators to kickstart them
+                    for &elev_idx in state.alive_elevs.iter() {
+                        if elev_idx == local_idx {
+                            let _ = call_assign_tx.send(pseudo_cb.clone());
+                            *idle_deadline = Instant::now() + idle_timeout;
+                        }
+                        if elev_idx != local_idx {
+                            let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: pseudo_cb.clone(), elev_idx }] });
+                        }
+                    }
+                }
+
+                // Remove watchdog for disappeared elevators and re-queue orders
+                for elev_idx in &lost {
+                    println!("{}", format!("Elev {} lost, re-queuing orders", elev_idx).red().bold());
+                    let _ = state.wd_remove_tx.send(*elev_idx);
+                    state.positions.remove(elev_idx);
+                    if let Some(Some(order)) = state.current_orders.remove(elev_idx) {
+                        println!("{}", format!("Re-queuing order: {}", order).yellow().bold());
+                        let _ = ack_complete_tx.send((0, Msg::RequestOrder { order }));
+                    }
                 }
             }
-            
 
-            // if new elevators come online, all elevators sync their orders 
-            for elev in alive_elevs {
-                if elev != local_id {
-                    // TODO: Send current orders before the orders in the queue
-                    let orders_to_send: Vec<Order> = state.orders.iter().cloned().chain(state.current_orders.values().filter_map(|o| o.clone())).collect();
-                    let states_to_send: Vec<ElevatorState> = state.positions.iter().map(|(id, floor)| ElevatorState { id: *id as u8, floor: *floor }).collect();
-                    let _ = network_tx.send(Msg::QueueOrders { orders: orders_to_send });
-                    let _ = network_tx.send(Msg::StateUpdate { states: states_to_send });
-                }
+            if state.just_spawned {
+                state.just_spawned = false;
+                let _ = network_tx.send(Msg::CompleteOrder { order: Order { cb: pseudo_cb, elev_idx: local_idx } });
+            }
+
+            // Sync orders and state with newly alive elevators
+            if !newly_alive.is_empty() {
+                let orders_to_send: Vec<Order> = state.orders.iter().cloned().chain(state.current_orders.values().filter_map(|o| o.clone())).collect();
+                let states_to_send: Vec<ElevatorState> = state.positions.iter().map(|(id, floor)| ElevatorState { id: *id as u8, floor: *floor }).collect();
+                let _ = network_tx.send(Msg::QueueOrders { orders: orders_to_send });
+                let _ = network_tx.send(Msg::StateUpdate { states: states_to_send });
             }
         }
     }

@@ -23,7 +23,7 @@ async fn main() -> io::Result<()> {
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
     let restart_remote_ids = remote_ids.clone();
-    println!("I'm {}", local_id);
+    // println!("I'm {}", local_id);
 
     // Elevator channels (CallButton-based)
     let (call_request_tx, call_request_rx) = uc::<CallButton>();
