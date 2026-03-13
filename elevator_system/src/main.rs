@@ -18,7 +18,7 @@ pub const USER: &str = "MAC"; // "MAC" or "LAB"
 async fn main() -> io::Result<()> {
 
     let local_id: u8 = env::args().last().unwrap().parse().unwrap();
-    let mut ids = vec![19, 20, 21];
+    let mut ids = vec![19, 20];
 
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
@@ -90,9 +90,9 @@ async fn main() -> io::Result<()> {
     let master_slave_task = tokio::spawn(async move {
         master_slave::store_online_elevators(local_id, elevs_alive_tx, ping_rx).await;
     });
-    // let restart_task = tokio::spawn(async move {
-    //     master_slave::restart_elevators(local_id, restart_remote_ids, restart_elevs_alive_rx).await;
-    // });
+    let restart_task = tokio::spawn(async move {
+        master_slave::restart_elevators(local_id, restart_remote_ids, restart_elevs_alive_rx).await;
+    });
 
     let _ = tokio::join!(elevator_task, network_task, order_task, master_slave_task);
     Ok(())
