@@ -27,7 +27,7 @@ pub struct NextOrderResult {
 pub const M: u8 = 3; // floors
 
 pub enum Event {
-    StateShare { states: Vec<ElevatorState> },
+    StateUpdateAndShare { states: Vec<ElevatorState> },
     StateUpdate { states: Vec<ElevatorState> },
     RequestOrder { order: Order },
     WantOrder { completed_order: Order },

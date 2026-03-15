@@ -4,6 +4,13 @@ use crate::elevator::elevio::poll::{CallButton, CallType};
 use colored::Colorize;
 
 
+pub fn is_mine(order: Order, idx: usize) -> bool {
+    if (order.elev_idx == idx) || order.cb.call != CallType::Cab {
+        return true;
+    }
+    false
+}
+
 pub fn assign_new_orders(
     order: Order,
     orders: &mut VecDeque<Order>,

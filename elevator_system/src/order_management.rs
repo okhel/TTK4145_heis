@@ -15,7 +15,7 @@ use crate::{
 use types::{Event, Order, Role};
 pub mod types;
 pub mod utils;
-use utils::{assign_new_orders, assign_next_order};
+use utils::{assign_new_orders, assign_next_order, is_mine};
 
 
 fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
@@ -26,7 +26,7 @@ fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
         Msg::CompleteOrder { order }                 => Some(Event::CompleteOrder { order }),
         Msg::ClearOrders { orders }             => Some(Event::ClearOrders { orders }),
         Msg::StateUpdate { states }     => match role {
-            Role::Master => Some(Event::StateShare { states }),
+            Role::Master => Some(Event::StateUpdateAndShare { states }),
             Role::Slave => Some(Event::StateUpdate { states }),
         },
         Msg::Heartbeat                   => None,
@@ -37,7 +37,6 @@ struct ManagerState {
     positions: HashMap<usize, u8>,
     current_orders: HashMap<usize, Option<Order>>,
     alive_elevs: HashSet<usize>,
-    just_spawned: bool,
     pending_acks: HashMap<Order, Order>,
     role: Role,
     network_ready: bool,
@@ -52,7 +51,6 @@ impl ManagerState {
             positions: HashMap::new(),
             current_orders: HashMap::new(),
             alive_elevs: HashSet::new(),
-            just_spawned: true,
             pending_acks: HashMap::new(),
             role: Role::Slave,
             network_ready: false,
@@ -91,18 +89,19 @@ pub async fn order_manager(
 
     let mut state = ManagerState::new(wd_reset_tx, wd_remove_tx);
 
-    let init_floor = update_floor_rx.recv().await
-        .expect("Failed to receive initial floor from elevator");
+    // Wait for initial floor reading, this signifies that the elevator is ready to receive orders
+    let init_floor = update_floor_rx.recv().await.unwrap();
     state.positions.insert(local_idx, init_floor);
     println!("{}", format!("Elev {} ready at floor {}", local_idx, init_floor).green().bold());
 
+    // Idle timeout before the elevator should request a new order
     let idle_timeout = Duration::from_secs(60);
     let mut idle_deadline = Instant::now() + idle_timeout;
 
     loop {
         let event = tokio::select! {
             Some(cb)            = call_request_rx.recv() => Event::RequestOrder { order: Order { cb: cb, elev_idx: local_idx } },
-            Some(floor)         = update_floor_rx.recv()  => Event::StateShare { states: vec![ElevatorState {id: local_id, floor}] },
+            Some(floor)         = update_floor_rx.recv()  => Event::StateUpdateAndShare { states: vec![ElevatorState {id: local_id, floor}] },
             Some(cb)            = call_complete_rx.recv()  => Event::CompleteOrder { order: Order { cb: cb, elev_idx: local_id as usize } },
             Ok(alive_elevs)     = mgmt_elevs_alive_rx.recv()  => Event::AlivesUpdate { alive_elevs },
             Some(order)         = want_order_rx.recv()      => Event::WantOrder { completed_order: order },
@@ -116,9 +115,7 @@ pub async fn order_manager(
                 idle_deadline = Instant::now() + idle_timeout;
                 if let Some(&floor) = state.positions.get(&local_idx) {
                     println!("{}", "Idle for 60 seconds -> kickstarting with cab completion".yellow());
-                    Event::CompleteOrder {
-                        order: Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx: local_idx },
-                    }
+                    Event::WantOrder { completed_order: Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx: local_idx } }
                 } else {
                     continue;
                 }
@@ -126,7 +123,7 @@ pub async fn order_manager(
             else => panic!("All channels closed"),
         };
 
-        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx, &ack_complete_tx, &mut idle_deadline, idle_timeout);
+        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx, &ack_complete_tx, &want_order_tx, &mut idle_deadline, idle_timeout);
     }
 }
 
@@ -139,10 +136,12 @@ fn handle_event(
     call_light_tx: &UTx<(CallButton, bool)>,
     network_tx: &UTx<Msg>,
     ack_complete_tx: &UTx<(u32, Msg)>,
+    want_order_tx: &UTx<Order>,
     idle_deadline: &mut Instant,
     idle_timeout: Duration,
 ) {
     match event {
+
         // local buttonpress
        Event::RequestOrder { order } => {
             let _ = network_tx.send(Msg::RequestOrder { order });
@@ -152,24 +151,30 @@ fn handle_event(
         Event::AckReceived(msg) => {
             if let Msg::RequestOrder { order } = msg {
                 if state.role == Role::Master {
+
+                    // Tell slaves to queue the order
+                    let _ = network_tx.send(Msg::QueueOrders { orders: vec![order.clone()] });
                     state.pending_acks.remove(&order);
                     if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.clone().cb, true)); }
+
                     if let Some(order_elev_idx) = try_assign_new_order(order.clone(), state) {
                         update_current_orders(state, order.clone(), order_elev_idx);
-                        // state.current_orders.insert(order_elev_idx, Some(order.clone()));
-                        match order_elev_idx == local_idx {
-                            true => { let _ = call_assign_tx.send(order.cb.clone()); *idle_deadline = Instant::now() + idle_timeout; }
-                            false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] }); }
+                        if order_elev_idx == local_idx {
+                            let _ = call_assign_tx.send(order.cb.clone());
+                            *idle_deadline = Instant::now() + idle_timeout;
+                        }
+                        else {
+                            let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] });
                         }
                     }
                     else {
                         state.orders.push_back(order.clone());
                     }
-                    let _ = network_tx.send(Msg::QueueOrders { orders: vec![order.clone()] });
                 }
             }
         }
 
+        // Slaves should queue the order and turn on the light
         Event::QueueOrders { orders } => {
             for order in orders {
                 if !state.orders.contains(&order) {
@@ -181,11 +186,11 @@ fn handle_event(
             }
         }
 
+        // Slave should assign the order to the elevator
         Event::AssignOrders { orders } => {
             for order in orders {
-                // state.current_orders.insert(order.elev_idx, Some(order.clone()));
-                if order.elev_idx == local_idx {
-                    println!("Elev {} assigned order: {}", local_idx, order);
+                if is_mine(order.clone(), local_idx) {
+                    println!("Received order: {} assigned to me", order);
                     let _ = call_assign_tx.send(order.cb.clone());
                     *idle_deadline = Instant::now() + idle_timeout;
                 }
@@ -250,22 +255,31 @@ fn handle_event(
 
         Event::ClearOrders { orders } => {
             clear_these_orders(orders, state, local_idx, call_light_tx);
-            // println!("Orders in queue: [{}]", state.orders.iter().map(|o| format!("{}", o)).collect::<Vec<_>>().join(", "));
         }
 
-        // got a state update from an elevator
+        // got a state update from another elevator
         Event::StateUpdate { states } => {
             for new_state in states {
                 state.positions.insert(new_state.id as usize, new_state.floor);
             }
         }
 
-        Event::StateShare { states } => {
+        // need to inform other elevators about the new state, either because I am master or because I received an update from a slave and need to pass it on
+        Event::StateUpdateAndShare { states } => {
             for new_state in &states {
                 state.positions.insert(new_state.id as usize, new_state.floor);
             }
             if state.network_ready {
-                let _ = network_tx.send(Msg::StateUpdate { states });
+                let _ = network_tx.send(Msg::StateUpdate { states: states.clone() });
+            }
+            if state.role == Role::Master {
+                for elev_idx in states.iter().map(|s| s.id as usize) {
+                    if state.current_orders.get(&elev_idx).is_none() {
+                        let floor = state.positions.get(&elev_idx).unwrap().clone();
+                        let pseudo_cb = CallButton { floor, call: CallType::Cab };
+                        let _ = want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
+                    }
+                }
             }
         }
 
@@ -288,13 +302,9 @@ fn handle_event(
             state.alive_elevs = new_set.clone();
             state.network_ready = true;
 
-            let master_died;
-            if old_set.len() > 0 {
-                master_died = !(old_set.iter().min() == new_set.iter().min());
-            }
-            else {
-                master_died = true;
-            }
+            let became_master;
+            if old_set.len() > 0 { became_master = !(old_set.iter().min() == new_set.iter().min());}
+            else { became_master = true; }
             
             match alive_elevs.iter().min() == Some(&local_id) {
                 true => { state.role = Role::Master; }
@@ -304,28 +314,10 @@ fn handle_event(
 
             let pseudo_cb = CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab };
             if state.role == Role::Master {
-                if master_died {
-                    // Send pseudo cab order to new master
-                    println!("Change of master");
-
-                    for elev_idx in state.alive_elevs.iter() {
-                        if let Some(floor) = state.positions.get(&elev_idx) {
-                            println!("Elev {} is at floor {}", elev_idx, floor);
-                        }
-                        else {
-                            println!("Elev {} does not have a floor reading currently", elev_idx);
-                        }
-                    }
-
-                    // Assign pseudo cab order to all elevators to kickstart them
-                    for &elev_idx in newly_alive.iter() {
-                        if elev_idx == local_idx {
-                            let _ = call_assign_tx.send(pseudo_cb.clone());
-                            *idle_deadline = Instant::now() + idle_timeout;
-                        }
-                        if elev_idx != local_idx {
-                            let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: pseudo_cb.clone(), elev_idx }] });
-                        }
+                if became_master {
+                    // println!("Change of master");
+                    if state.current_orders.get(&local_idx).is_none() {
+                        let _ = want_order_tx.send(Order { cb: pseudo_cb.clone(), elev_idx: local_idx });
                     }
                 }
 
@@ -340,17 +332,8 @@ fn handle_event(
                     }
                 }
             }
-            else {
-                
-            }
-            println!("I'm {:?}", &state.role);
 
-            if state.just_spawned {
-                state.just_spawned = false;
-                let _ = network_tx.send(Msg::CompleteOrder { order: Order { cb: pseudo_cb, elev_idx: local_idx } });
-            }
-
-            println!("Newly alive: {:?}", newly_alive);
+            // println!("I'm {:?}", &state.role);
             // Sync orders and state with newly alive elevators
             if !newly_alive.is_empty() {
                 let orders_to_send: Vec<Order> = state.orders.iter().cloned().chain(state.current_orders.values().filter_map(|o| o.clone())).collect();
@@ -389,12 +372,7 @@ fn clear_these_orders(completed_orders: Vec<Order>, state: &mut ManagerState, lo
     }
 }
 
-fn is_mine(order: Order, idx: usize) -> bool {
-    if (order.elev_idx == idx) || order.cb.call != CallType::Cab {
-        return true;
-    }
-    false
-}
+
 
 fn try_assign_new_order(order: Order, state: &mut ManagerState) -> Option<usize> {
     let new_order_found = assign_new_orders(

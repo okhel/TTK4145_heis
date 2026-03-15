@@ -175,11 +175,35 @@ pub async fn network_runner(
 
             // handle send failures with app-level retry
             Some((fail_seq, peer_id, msg, addr, retry_count)) = fail_rx.recv() => {
-                if retry_count < MAX_APP_RETRIES {
-                    // eprintln!(
-                    //     "Retrying send for seq={fail_seq} to peer {peer_id} (app retry {}/{})",
-                    //     retry_count + 1, MAX_APP_RETRIES
-                    // );
+                if !is_master && master_id.is_some() && master_id != Some(peer_id) {
+                    // Master changed mid-send — redirect to new master
+                    let new_master = master_id.unwrap();
+                    if let Some(new_addr_str) = peer_addrs.get(&new_master) {
+                        let new_addr: SocketAddr = new_addr_str.parse().unwrap();
+                        let mut map = pending_acks.lock().await;
+                        if let Some((remaining, _)) = map.get_mut(&fail_seq) {
+                            remaining.remove(&peer_id);
+                            remaining.insert(new_master);
+                        }
+                        spawn_send_task(
+                            msg, new_addr, fail_seq, my_id, new_master, 0,
+                            ack_tx.clone(), fail_tx.clone(),
+                        );
+                    } else {
+                        let mut map = pending_acks.lock().await;
+                        let all_done = if let Some((remaining, _)) = map.get_mut(&fail_seq) {
+                            remaining.remove(&peer_id);
+                            remaining.is_empty()
+                        } else {
+                            false
+                        };
+                        if all_done {
+                            if let Some((_, msg)) = map.remove(&fail_seq) {
+                                let _ = ack_complete_tx.send((fail_seq, msg));
+                            }
+                        }
+                    }
+                } else if retry_count < MAX_APP_RETRIES {
                     spawn_send_task(
                         msg, addr, fail_seq, my_id, peer_id, retry_count + 1,
                         ack_tx.clone(), fail_tx.clone(),
