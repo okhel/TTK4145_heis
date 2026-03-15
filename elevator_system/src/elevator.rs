@@ -31,7 +31,7 @@ impl Elevator {
     }
 }
 
-pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, call_light_assign_rx: URx<(CallButton, bool)>) -> Result<()> {
+pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, call_light_assign_rx: URx<(CallButton, bool)>, call_light_assign_tx: UTx<(CallButton, bool)>) -> Result<()> {
 
     // Initialize elevator
     let my_elev = Arc::new(Elevator::init(port).await?);
@@ -67,7 +67,7 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
     let motor_control_task = tokio::spawn({
         let elev = Arc::clone(&my_elev);
         async move {
-            elev.motor_control(floor_sensor_rx, call_assign_rx, update_floor_tx, call_complete_tx).await;
+            elev.motor_control(floor_sensor_rx, call_assign_rx, update_floor_tx, call_complete_tx, call_light_assign_tx).await;
         }
     });
 

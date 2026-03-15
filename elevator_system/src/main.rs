@@ -18,19 +18,20 @@ pub const USER: &str = "MAC"; // "MAC" or "LAB"
 async fn main() -> io::Result<()> {
 
     let local_id: u8 = env::args().last().unwrap().parse().unwrap();
-    let mut ids = vec![19, 20];
+    let mut ids = vec![19, 20, 21];
 
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
     let restart_remote_ids = remote_ids.clone();
     // println!("I'm {}", local_id);
-
+    
     // Elevator channels (CallButton-based)
     let (call_request_tx, call_request_rx) = uc::<CallButton>();
     let (call_assign_tx, call_assign_rx) = uc::<CallButton>();
     let (update_floor_tx, update_floor_rx) = uc::<u8>();
     let (call_complete_tx, call_complete_rx) = uc::<CallButton>();
     let (call_light_assign_tx, call_light_assign_rx) = uc::<(CallButton, bool)>();
+    let init_call_light_assign_tx = call_light_assign_tx.clone();
 
 
     // Network channels
@@ -53,6 +54,7 @@ async fn main() -> io::Result<()> {
             update_floor_tx,
             call_complete_tx,
             call_light_assign_rx,
+            init_call_light_assign_tx
         )
         .await
     });

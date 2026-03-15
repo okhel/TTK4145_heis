@@ -1,4 +1,4 @@
-use crate::elevator::{Elevator, elevio};
+use crate::elevator::{Elevator, NUM_FLOORS, elevio};
 use crate::elevator::elevio::poll::{CallButton, CallType};
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 use tokio::time::{sleep, Duration};
@@ -6,7 +6,14 @@ use tokio::time::{sleep, Duration};
 impl Elevator {
 
     // Go to a floor, cannot be called if not at a floor
-    pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>) {
+    pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, call_light_assign_tx: UTx<(CallButton, bool)>) {
+        
+        // Turn off all lights before initilaizing them
+        // for i in 0..NUM_FLOORS {
+        //     let _ = call_light_assign_tx.send((CallButton {floor: i, call: CallType::Cab}, false));
+        //     let _ = call_light_assign_tx.send((CallButton {floor: i, call: CallType::HallDown}, false));
+        //     let _ = call_light_assign_tx.send((CallButton {floor: i, call: CallType::HallUp}, false));
+        // }
 
         // If not at a floor, go to start floor
         match URx::try_recv(&mut floor_sensor_rx) {
