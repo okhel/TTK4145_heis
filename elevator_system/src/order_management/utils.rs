@@ -4,10 +4,6 @@ use crate::elevator::elevio::poll::{CallButton, CallType};
 use colored::Colorize;
 
 
-pub fn is_mine(order: Order, idx: usize) -> bool {
-    order.elev_idx == idx || order.cb.call != CallType::Cab
-}
-
 pub fn assign_new_order(
     order: Order,
     orders: &mut VecDeque<Order>,
@@ -24,7 +20,7 @@ pub fn assign_new_order(
         designate_busy_idle(alive_elevs.to_vec(), current_orders, order.clone());
 
     if let Some((elev_idx, paused_order)) =
-        find_order_otw(busy_elevs.clone(), &order, current_orders, positions)
+        pause_order(busy_elevs.clone(), &order, current_orders, positions)
     {
         orders.push_front(paused_order);
         orders.retain(|o| o != &order);
@@ -113,7 +109,7 @@ pub fn assign_next_order(
     }
 
     if result.next.is_some() {
-        let order = find_closest_order(
+        let order = find_closest_order_otw(
             result.next.as_ref().unwrap().clone(),
             eligible,
             completed.clone(),
@@ -132,14 +128,14 @@ pub fn assign_next_order(
 }
 
 
-fn elevator_may_take_order(elev_idx: usize, order: &Order) -> bool {
-    order.cb.call != CallType::Cab || order.elev_idx == elev_idx
+pub fn is_mine(order: &Order, idx: usize) -> bool {
+    order.elev_idx == idx || order.cb.call != CallType::Cab
 }
 
 fn get_eligible_orders(orders: &VecDeque<Order>, completed: Order) -> Vec<Order> {
     orders
         .iter()
-        .filter(|o| elevator_may_take_order(completed.elev_idx, o))
+        .filter(|o| is_mine(o, completed.elev_idx))
         .cloned()
         .collect()
 }
@@ -153,7 +149,7 @@ fn designate_busy_idle(
         .filter(|&i| current_orders.get(&i).and_then(|o| o.as_ref()).is_some())
         .collect();
     let idle: Vec<usize> = alive_elevs.iter().copied()
-        .filter(|&i| !busy.contains(&i) && elevator_may_take_order(i, &order))
+        .filter(|&i| !busy.contains(&i) && is_mine(&order, i))
         .collect();
     (busy, idle)
 }
@@ -178,8 +174,8 @@ fn order_on_the_way(elev_idx: usize, position: u8, curr_order: Order, new_order:
     let on_way_down = new_call == CallType::HallDown || new_call == CallType::Cab;
     let on_way_up = new_call == CallType::HallUp || new_call == CallType::Cab;
 
-    (is_below && on_way_down && elevator_may_take_order(elev_idx, &new_order))
-        || (is_above && on_way_up && elevator_may_take_order(elev_idx, &new_order))
+    (is_below && on_way_down && is_mine(&new_order, elev_idx))
+        || (is_above && on_way_up && is_mine(&new_order, elev_idx))
 }
 
 fn find_closest_elev(
@@ -193,7 +189,7 @@ fn find_closest_elev(
         .map(|(idx, _)| idx)
 }
 
-fn find_order_otw(
+fn pause_order(
     busy_elevs: Vec<usize>,
     order: &Order,
     current_orders: &HashMap<usize, Option<Order>>,
@@ -210,7 +206,7 @@ fn find_order_otw(
     })
 }
 
-fn find_closest_order(target: Order, eligible: Vec<Order>, completed: Order) -> Order {
+fn find_closest_order_otw(target: Order, eligible: Vec<Order>, completed: Order) -> Order {
     eligible.into_iter()
         .filter(|o| order_on_the_way(completed.elev_idx, completed.cb.floor, target.clone(), o.clone()))
         .min_by_key(|o| u8::abs_diff(completed.cb.floor, o.cb.floor))

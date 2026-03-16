@@ -4,7 +4,7 @@ use tokio::sync::{
     mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc},
     broadcast::Receiver as BcRx,
 };
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 
 use crate::{
     elevator::elevio::poll::{CallButton, CallType},
@@ -164,7 +164,7 @@ fn handle_event(
                     // Tell slaves to queue the order
                     let _ = network_tx.send(Msg::QueueOrders { orders: vec![order.clone()] });
                     state.pending_acks.remove(&order);
-                    if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.clone().cb, true)); }
+                    if is_mine(&order, local_idx) { let _ = call_light_tx.send((order.cb.clone(), true)); }
 
                     if let Some(order_elev_idx) = try_assign_new_order(order.clone(), state) {
                         send_order(order.clone(), Some(Order { cb: order.cb.clone(), elev_idx: order_elev_idx }), state, local_idx, call_assign_tx, network_tx);
@@ -182,7 +182,7 @@ fn handle_event(
                 if !state.orders.contains(&order) {
                     state.orders.push_back(order.clone());
                 }
-                if is_mine(order.clone(), local_idx) {
+                if is_mine(&order, local_idx) {
                     let _ = call_light_tx.send((order.cb, true));
                 }
             }
@@ -191,7 +191,7 @@ fn handle_event(
         // Slave should assign the order to the elevator
         Event::AssignOrders { orders } => {
             for order in orders {
-                if is_mine(order.clone(), local_idx) {
+                if is_mine(&order, local_idx) {
                     println!("Received order: {} assigned to me", order);
                     let _ = call_assign_tx.send(order.cb.clone());
                 }
@@ -378,7 +378,7 @@ fn clear_these_orders(completed_orders: Vec<Order>, state: &mut ManagerState, lo
         else {
             state.orders.retain(|o| o.cb != order.cb);
         }
-        if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.cb, false)); }
+        if is_mine(&order, local_idx) { let _ = call_light_tx.send((order.cb, false)); }
     }
 }
 
