@@ -21,17 +21,14 @@ pub async fn send_reliable(
 ) -> std::io::Result<()> {
     let frame = Frame::Data { seq, msg: msg.clone() };
     let payload = bincode::serialize(&frame).expect("serialize failed");
-    for attempt in 0..MAX_RETRIES {
-        socket.send_to(&payload, addr).await?;
+    for _attempt in 0..MAX_RETRIES {
+        if socket.send_to(&payload, addr).await.is_err() {
+            tokio::time::sleep(ACK_TIMEOUT).await;
+            continue;
+        }
         match tokio::time::timeout(ACK_TIMEOUT, recv_ack(&socket, seq, &msg)).await {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                eprintln!(
-                    "ACK timeout for seq={seq}, attempt {}/{MAX_RETRIES}",
-                    attempt + 1
-                );
-            }
+            Ok(true) => return Ok(()),
+            _ => continue,
         }
     }
     Err(std::io::Error::new(
@@ -64,31 +61,30 @@ pub async fn recv_reliable(socket: &UdpSocket) -> std::io::Result<(Msg, u32, Soc
 
 const ACK_COPIES: usize = 5;
 
-async fn send_ack(
-    socket: &UdpSocket,
-    seq: u32,
-    msg: &Msg,
-    addr: SocketAddr,
-) -> std::io::Result<()> {
+async fn send_ack(socket: &UdpSocket, seq: u32, msg: &Msg, addr: SocketAddr) {
     let frame = Frame::Ack {
         seq,
         msg: msg.clone(),
     };
     let payload = bincode::serialize(&frame).expect("serialize ack failed");
     for _ in 0..ACK_COPIES {
-        socket.send_to(&payload, addr).await?;
+        let _ = socket.send_to(&payload, addr).await;
     }
-    Ok(())
 }
 
-async fn recv_ack(socket: &UdpSocket, seq: u32, original_msg: &Msg) -> std::io::Result<()> {
+async fn recv_ack(socket: &UdpSocket, seq: u32, original_msg: &Msg) -> bool {
     let mut buf = vec![0u8; MAX_MSG_BYTES];
     loop {
-        let (len, _) = socket.recv_from(&mut buf).await?;
-        let frame: Frame = bincode::deserialize(&buf[..len])
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        let (len, _) = match socket.recv_from(&mut buf).await {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let frame: Frame = match bincode::deserialize(&buf[..len]) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
         match frame {
-            Frame::Ack { seq: s, msg } if s == seq && msg == *original_msg => return Ok(()),
+            Frame::Ack { seq: s, msg } if s == seq && msg == *original_msg => return true,
             _ => continue,
         }
     }
