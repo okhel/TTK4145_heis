@@ -12,10 +12,10 @@ pub async fn store_online_elevators(
     elevs_alive_tx: BcTx<Vec<u8>>,
     mut ping_received_rx: URx<u8>,
 ) {
-    let mut online_elevators: BTreeMap<u8, time::Instant> = BTreeMap::new();
-    let timeout_duration = Duration::from_millis(1000);
-    let join_debounce: Duration = Duration::from_millis(50);
-    let leave_debounce: Duration = Duration::from_millis(200);
+    let mut online_elevators: BTreeMap<u8, Instant> = BTreeMap::new();
+    let timeout_duration = Duration::from_millis(3000);
+    let join_debounce: Duration = Duration::from_millis(100);
+    let leave_debounce: Duration = Duration::from_millis(500);
 
     let mut debounce_deadline: Option<time::Instant> = None;
 
@@ -33,14 +33,14 @@ pub async fn store_online_elevators(
                 }
             }
 
-            _ = time::sleep(Duration::from_millis(5)) => {
+            _ = time::sleep(Duration::from_millis(10)) => {
                 let now = time::Instant::now();
                 let before_len = online_elevators.len();
 
                 online_elevators.insert(local_id, now);
 
                 online_elevators.retain(|_, last_seen| {
-                    now.duration_since(*last_seen) < timeout_duration
+                    now.saturating_duration_since(*last_seen) < timeout_duration
                 });
 
                 if online_elevators.len() != before_len {
@@ -59,7 +59,7 @@ pub async fn store_online_elevators(
                 }
             }, if debounce_deadline.is_some() => {
                 elevs_alive_tx.send(online_elevators.keys().cloned().collect()).unwrap();
-                println!("Online elevators: {:?}", online_elevators.keys());
+                println!("[Tx]Online elevators: {:?}", online_elevators.keys());
                 debounce_deadline = None;
             }
         }
