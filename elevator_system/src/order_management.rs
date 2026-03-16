@@ -178,6 +178,9 @@ fn handle_event(
 
         // Slaves should queue the order and turn on the light
         Event::QueueOrders { orders } => {
+            if state.role == Role::Master {
+                let _ = network_tx.send(Msg::QueueOrders { orders: orders.clone() });
+            }
             for order in orders {
                 if !state.orders.contains(&order) {
                     state.orders.push_back(order.clone());
