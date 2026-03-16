@@ -18,6 +18,7 @@ pub async fn store_online_elevators(
     let leave_debounce: Duration = Duration::from_millis(200);
 
     let mut debounce_deadline: Option<time::Instant> = None;
+    let mut cleanup_interval = time::interval(Duration::from_millis(50));
 
     loop {
         tokio::select! {
@@ -33,7 +34,7 @@ pub async fn store_online_elevators(
                 }
             }
 
-            _ = time::sleep(Duration::from_millis(5)) => {
+            _ = cleanup_interval.tick() => {
                 let now = time::Instant::now();
                 let before_len = online_elevators.len();
 

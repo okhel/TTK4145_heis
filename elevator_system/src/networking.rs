@@ -113,12 +113,9 @@ pub async fn network_runner(
             result = alive_rx.recv() => {
                 let alive = match result {
                     Ok(alive) => alive,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        // Missed messages; drain to latest
-                        match alive_rx.recv().await {
-                            Ok(alive) => alive,
-                            _ => continue,
-                        }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        eprintln!("alive_rx lagged by {n} messages, will catch up next iteration");
+                        continue;
                     }
                     Err(_) => continue,
                 };
@@ -269,12 +266,10 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
             _ = ping_interval.tick() => {
                 for addr in &ping_addrs {
                     let _ = ping_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
-                    println!("{} pinging {}", my_id, addr);
                 }
             }
 
             Ok((n, addr)) = ping_socket.recv_from(&mut ping_buf) => {
-                println!("{} received ping from {}", my_id, addr);
                 let received_id = ping_buf[..n][0];
                 let _ = ping_tx.send(received_id);
             }
