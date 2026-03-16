@@ -269,10 +269,12 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
             _ = ping_interval.tick() => {
                 for addr in &ping_addrs {
                     let _ = ping_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
+                    println!("{} pinging {}", my_id, addr);
                 }
             }
 
             Ok((n, addr)) = ping_socket.recv_from(&mut ping_buf) => {
+                println!("{} received ping from {}", my_id, addr);
                 let received_id = ping_buf[..n][0];
                 let _ = ping_tx.send(received_id);
             }
