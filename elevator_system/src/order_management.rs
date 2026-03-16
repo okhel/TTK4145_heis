@@ -321,6 +321,9 @@ fn handle_event(
                     if state.current_orders.get(&local_idx).is_none() {
                         let _ = want_order_tx.send(Order { cb: pseudo_cb.clone(), elev_idx: local_idx });
                     }
+                    else {
+                        let _ = state.wd_reset_tx.send(local_idx);
+                    }
                 }
 
                 // Remove watchdog for disappeared elevators and re-queue orders
