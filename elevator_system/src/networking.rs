@@ -255,30 +255,37 @@ pub async fn network_runner(
 }
 
 async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) {
+
     let ping_socket: Arc<UdpSocket>;
     if USER == "MAC" {
         ping_socket = init_socket(my_id, 30000 + my_id as u16).await;
     } else {
         ping_socket = init_socket(my_id, 30000).await;
-        println!("Hearbeat success");
     }
-    let mut ping_interval = time::interval(Duration::from_millis(5));
-    let mut ping_buf = [0u8; 64];
 
-    loop {
-        tokio::select! {
-            _ = ping_interval.tick() => {
-                for addr in &ping_addrs {
-                    let _ = ping_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
-                    // println!("{} pinging {}", my_id, addr);
-                }
-            }
+    let recv_socket = ping_socket.clone();
+    let send_socket = ping_socket.clone();
 
-            Ok((n, addr)) = ping_socket.recv_from(&mut ping_buf) => {
-                // println!("{} received ping from {}", my_id, addr);
-                let received_id = ping_buf[..n][0];
+    // RECEIVE TASK
+    tokio::spawn(async move {
+        let mut buf = [0u8; 64];
+
+        loop {
+            if let Ok((n, _addr)) = recv_socket.recv_from(&mut buf).await {
+                let received_id = buf[..n][0];
                 let _ = ping_tx.send(received_id);
             }
+        }
+    });
+
+    // SEND LOOP
+    let mut interval = time::interval(Duration::from_millis(50));
+
+    loop {
+        interval.tick().await;
+
+        for addr in &ping_addrs {
+            let _ = send_socket.send_to(&my_id.to_be_bytes(), addr).await;
         }
     }
 }
