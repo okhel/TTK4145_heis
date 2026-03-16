@@ -215,6 +215,7 @@ fn handle_event(
                         if *current_order == Some(order.clone()) {
                             state.current_orders.remove(&order.elev_idx);
                             println!("{}", format!("Elev {} completed order: {}", order.elev_idx, order).blue().bold());
+                            let _ = state.idle_reset_tx.send(order.elev_idx);
                         }
                         else {
                             if let Some(order_to_queue) = current_order.clone() {
