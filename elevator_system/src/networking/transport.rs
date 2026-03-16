@@ -42,12 +42,17 @@ pub async fn send_reliable(
 pub async fn recv_reliable(socket: &UdpSocket) -> std::io::Result<(Msg, u32, SocketAddr)> {
     let mut buf = vec![0u8; MAX_MSG_BYTES];
     loop {
-        let (len, addr) = socket.recv_from(&mut buf).await?;
-        let frame: Frame = bincode::deserialize(&buf[..len])
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        let (len, addr) = match socket.recv_from(&mut buf).await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let frame: Frame = match bincode::deserialize(&buf[..len]) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
         match frame {
             Frame::Data { seq, msg } => {
-                send_ack(socket, seq, &msg, addr).await?;
+                let _ = send_ack(socket, seq, &msg, addr).await;
                 return Ok((msg, seq, addr));
             }
             Frame::Ack { .. } => {

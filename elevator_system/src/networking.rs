@@ -119,6 +119,7 @@ pub async fn network_runner(
                     }
                     Err(_) => continue,
                 };
+                let alive_set: HashSet<u8> = alive.iter().cloned().collect();
                 master_id = alive.first().copied();
                 is_master = master_id == Some(my_id);
                 peer_ids = alive.iter().filter(|&&id| id != my_id).cloned().collect();
@@ -132,6 +133,20 @@ pub async fn network_runner(
                         .filter(|&&id| id != my_id)
                         .map(|&id| (id, format!("10.100.23.{}:21000", id as u16)))
                         .collect();
+                }
+
+                // Flush pending_acks for peers that left — don't wait for retries to exhaust
+                let mut map = pending_acks.lock().await;
+                let completed_seqs: Vec<u32> = map.iter_mut()
+                    .filter_map(|(&seq, (remaining, _))| {
+                        remaining.retain(|id| alive_set.contains(id));
+                        if remaining.is_empty() { Some(seq) } else { None }
+                    })
+                    .collect();
+                for seq in completed_seqs {
+                    if let Some((_, msg)) = map.remove(&seq) {
+                        let _ = ack_complete_tx.send((seq, msg));
+                    }
                 }
             }
 
@@ -251,15 +266,23 @@ pub async fn network_runner(
 }
 
 async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) {
-    let ping_socket: Arc<UdpSocket>;
+    let recv_socket: Arc<UdpSocket>;
     if USER == "MAC" {
-        ping_socket = init_socket(my_id, 30000 + my_id as u16).await;
+        recv_socket = init_socket(my_id, 30000 + my_id as u16).await;
     } else {
-        ping_socket = init_socket(my_id, 30000).await;
+        recv_socket = init_socket(my_id, 30000).await;
         println!("Heartbeat success");
     }
 
-    let send_socket = ping_socket.clone();
+    // Separate send socket so errors from unreachable peers never affect receives
+    let send_socket: Arc<UdpSocket> = Arc::new(
+        if USER == "MAC" {
+            UdpSocket::bind("127.0.0.1:0").await.unwrap()
+        } else {
+            UdpSocket::bind(format!("10.100.23.{}:0", my_id)).await.unwrap()
+        }
+    );
+
     tokio::spawn(async move {
         let mut ping_interval = time::interval(Duration::from_millis(10));
         loop {
@@ -272,7 +295,7 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
 
     let mut ping_buf = [0u8; 64];
     loop {
-        match ping_socket.recv_from(&mut ping_buf).await {
+        match recv_socket.recv_from(&mut ping_buf).await {
             Ok((n, _)) => {
                 let received_id = ping_buf[..n][0];
                 let _ = ping_tx.send(received_id);
