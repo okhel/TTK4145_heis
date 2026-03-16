@@ -172,15 +172,14 @@ fn order_on_the_way(elev_idx: usize, position: u8, curr_order: Order, new_order:
     let new_floor = new_order.cb.floor;
     let curr_floor = curr_order.cb.floor;
     let new_call = new_order.cb.call;
-    let curr_call = curr_order.cb.call;
 
     let is_below = curr_floor <= new_floor && new_floor < position;
     let is_above = curr_floor >= new_floor && new_floor > position;
-    let on_way_below = (new_call == CallType::HallDown && curr_call != CallType::HallUp) || new_call == CallType::Cab;
-    let on_way_above = (new_call == CallType::HallUp && curr_call != CallType::HallDown) || new_call == CallType::Cab;
+    let on_way_down = new_call == CallType::HallDown || new_call == CallType::Cab;
+    let on_way_up = new_call == CallType::HallUp || new_call == CallType::Cab;
 
-    (is_below && on_way_below && elevator_may_take_order(elev_idx, &new_order))
-        || (is_above && on_way_above && elevator_may_take_order(elev_idx, &new_order))
+    (is_below && on_way_down && elevator_may_take_order(elev_idx, &new_order))
+        || (is_above && on_way_up && elevator_may_take_order(elev_idx, &new_order))
 }
 
 fn find_closest_elev(

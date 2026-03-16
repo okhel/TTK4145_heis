@@ -97,7 +97,7 @@ pub async fn order_manager(
     ));
 
     tokio::spawn(watchdog_timer(
-        Duration::from_secs(60),
+        Duration::from_secs(5),
         idle_reset_rx,
         idle_remove_rx,
         idle_expired_tx,
@@ -236,6 +236,7 @@ fn handle_event(
             }
         }
 
+        // Slave should clear the orders
         Event::ClearOrders { orders } => {
             clear_these_orders(orders, state, local_idx, call_light_tx);
         }
@@ -279,9 +280,11 @@ fn handle_event(
         Event::IdleTimeout { elev_idx } => {
             if state.role == Role::Master {
                 if let Some(&floor) = state.positions.get(&elev_idx) {
-                    println!("{}", format!("Elev {} idle for 60 seconds, requesting work", elev_idx).yellow());
-                    let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
-                    let _ = want_order_tx.send(order);
+                    if state.current_orders.get(&elev_idx).is_none() {
+                        println!("{}", format!("Elev {} idle for 5 seconds, requesting work", elev_idx).yellow());
+                        let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
+                        let _ = want_order_tx.send(order);
+                    }
                 }
                 let _ = state.idle_reset_tx.send(elev_idx);
             }
@@ -320,6 +323,7 @@ fn handle_event(
                 for elev_idx in &lost {
                     println!("{}", format!("Elev {} lost, re-queuing orders", elev_idx).red().bold());
                     let _ = state.wd_remove_tx.send(*elev_idx);
+                    let _ = state.idle_remove_tx.send(*elev_idx);
                     state.positions.remove(elev_idx);
                     if let Some(Some(order)) = state.current_orders.remove(elev_idx) {
                         println!("{}", format!("Re-queuing order: {}", order).yellow().bold());
