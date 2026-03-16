@@ -76,27 +76,36 @@ pub async fn network_runner(
         println!("Sender success");
     }
 
-    // Heartbeat task runs independently so message processing can never delay pings
-    let ping_addrs: Vec<String>;
-    if USER == "MAC" {
-        ping_addrs = remote_ids
-            .iter()
-            .map(|id| format!("127.0.0.1:{}", 30000 + *id as u16))
-            .collect();
-    } else {
-        ping_addrs = remote_ids
-            .iter()
-            .map(|id| format!("10.100.23.{}:30000", *id as u16))
-            .collect();
-    }
-    
-    tokio::spawn(heartbeat_runner(my_id, ping_addrs, ping_tx));
+    // Separate socket for sending ACKs so errors never affect the recv_socket
+    let ack_socket: Arc<UdpSocket> = Arc::new(
+        if USER == "MAC" {
+            UdpSocket::bind("127.0.0.1:0").await.unwrap()
+        } else {
+            UdpSocket::bind(format!("10.100.23.{}:0", my_id)).await.unwrap()
+        }
+    );
+
+    // Pre-parse heartbeat addresses to SocketAddr (avoids getaddrinfo on hot path)
+    let ping_addrs: HashMap<u8, SocketAddr> = remote_ids
+        .iter()
+        .map(|&id| {
+            let addr: SocketAddr = if USER == "MAC" {
+                format!("127.0.0.1:{}", 30000 + id as u16)
+            } else {
+                format!("10.100.23.{}:30000", id)
+            }.parse().unwrap();
+            (id, addr)
+        })
+        .collect();
+
+    let hb_alive_rx = alive_rx.resubscribe();
+    tokio::spawn(heartbeat_runner(my_id, ping_addrs, ping_tx, hb_alive_rx));
 
     let mut seq: u32 = 0;
     let mut is_master = false;
     let mut master_id: Option<u8> = None;
     let mut peer_ids: Vec<u8> = Vec::new();
-    let mut peer_addrs: HashMap<u8, String> = HashMap::new();
+    let mut peer_addrs: HashMap<u8, SocketAddr> = HashMap::new();
 
     // ACK tracking
     let pending_acks: Arc<Mutex<HashMap<u32, (HashSet<u8>, Msg)>>> =
@@ -123,17 +132,17 @@ pub async fn network_runner(
                 master_id = alive.first().copied();
                 is_master = master_id == Some(my_id);
                 peer_ids = alive.iter().filter(|&&id| id != my_id).cloned().collect();
-                if USER == "MAC" {
-                    peer_addrs = alive.iter()
-                        .filter(|&&id| id != my_id)
-                        .map(|&id| (id, format!("127.0.0.1:{}", 21000 + id as u16)))
-                        .collect();
-                } else {
-                    peer_addrs = alive.iter()
-                        .filter(|&&id| id != my_id)
-                        .map(|&id| (id, format!("10.100.23.{}:21000", id as u16)))
-                        .collect();
-                }
+                peer_addrs = alive.iter()
+                    .filter(|&&id| id != my_id)
+                    .map(|&id| {
+                        let addr: SocketAddr = if USER == "MAC" {
+                            format!("127.0.0.1:{}", 21000 + id as u16)
+                        } else {
+                            format!("10.100.23.{}:21000", id)
+                        }.parse().unwrap();
+                        (id, addr)
+                    })
+                    .collect();
 
                 // Flush pending_acks for peers that left — don't wait for retries to exhaust
                 let mut map = pending_acks.lock().await;
@@ -165,8 +174,7 @@ pub async fn network_runner(
                     pending_acks.lock().await.insert(seq, (expected, msg.clone()));
 
                     for id in target_ids {
-                        if let Some(addr) = peer_addrs.get(&id) {
-                            let addr: std::net::SocketAddr = addr.parse().unwrap();
+                        if let Some(&addr) = peer_addrs.get(&id) {
                             spawn_send_task(msg.clone(), addr, seq, my_id, id, 0, ack_tx.clone(), fail_tx.clone());
                         };
                     }
@@ -200,8 +208,7 @@ pub async fn network_runner(
                 if !is_master && master_id.is_some() && master_id != Some(peer_id) {
                     // Master changed mid-send — redirect to new master
                     let new_master = master_id.unwrap();
-                    if let Some(new_addr_str) = peer_addrs.get(&new_master) {
-                        let new_addr: SocketAddr = new_addr_str.parse().unwrap();
+                    if let Some(&new_addr) = peer_addrs.get(&new_master) {
                         let mut map = pending_acks.lock().await;
                         if let Some((remaining, _)) = map.get_mut(&fail_seq) {
                             remaining.remove(&peer_id);
@@ -250,7 +257,7 @@ pub async fn network_runner(
             }
 
             // route incoming messages with deduplication
-            Ok((msg, msg_seq, sender_addr)) = recv_reliable(&recv_socket) => {
+            Ok((msg, msg_seq, sender_addr)) = recv_reliable(&recv_socket, &ack_socket) => {
                 let now = Instant::now();
                 seen_messages.retain(|_, t| now.duration_since(*t) < DEDUP_WINDOW);
 
@@ -265,7 +272,12 @@ pub async fn network_runner(
     }
 }
 
-async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) {
+async fn heartbeat_runner(
+    my_id: u8,
+    all_ping_addrs: HashMap<u8, SocketAddr>,
+    ping_tx: UTx<u8>,
+    mut alive_rx: BcRx<Vec<u8>>,
+) {
     let recv_socket: Arc<UdpSocket>;
     if USER == "MAC" {
         recv_socket = init_socket(my_id, 30000 + my_id as u16).await;
@@ -274,7 +286,6 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
         println!("Heartbeat success");
     }
 
-    // Separate send socket so errors from unreachable peers never affect receives
     let send_socket: Arc<UdpSocket> = Arc::new(
         if USER == "MAC" {
             UdpSocket::bind("127.0.0.1:0").await.unwrap()
@@ -283,16 +294,44 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
         }
     );
 
+    // Send task: fast pings to alive peers, slow probes to all remote IDs
+    let all_addrs = all_ping_addrs.clone();
     tokio::spawn(async move {
-        let mut ping_interval = time::interval(Duration::from_millis(10));
+        let mut fast_interval = time::interval(Duration::from_millis(10));
+        let mut slow_interval = time::interval(Duration::from_secs(1));
+        let mut alive_peers: HashSet<u8> = HashSet::new();
+        let payload = my_id.to_be_bytes();
+
         loop {
-            ping_interval.tick().await;
-            for addr in &ping_addrs {
-                let _ = send_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
+            tokio::select! {
+                _ = fast_interval.tick() => {
+                    for &id in &alive_peers {
+                        if let Some(&addr) = all_addrs.get(&id) {
+                            let _ = send_socket.send_to(&payload, addr).await;
+                        }
+                    }
+                }
+                _ = slow_interval.tick() => {
+                    for &addr in all_addrs.values() {
+                        let _ = send_socket.send_to(&payload, addr).await;
+                    }
+                }
+                result = alive_rx.recv() => {
+                    match result {
+                        Ok(alive) => {
+                            alive_peers = alive.into_iter()
+                                .filter(|&id| id != my_id)
+                                .collect();
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => continue,
+                    }
+                }
             }
         }
     });
 
+    // Receive task: independent of send, no shared socket
     let mut ping_buf = [0u8; 64];
     loop {
         match recv_socket.recv_from(&mut ping_buf).await {
