@@ -256,23 +256,28 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
         ping_socket = init_socket(my_id, 30000 + my_id as u16).await;
     } else {
         ping_socket = init_socket(my_id, 30000).await;
-        println!("Hearbeat success");
+        println!("Heartbeat success");
     }
-    let mut ping_interval = time::interval(Duration::from_millis(5));
-    let mut ping_buf = [0u8; 64];
 
-    loop {
-        tokio::select! {
-            _ = ping_interval.tick() => {
-                for addr in &ping_addrs {
-                    let _ = ping_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
-                }
+    let send_socket = ping_socket.clone();
+    tokio::spawn(async move {
+        let mut ping_interval = time::interval(Duration::from_millis(10));
+        loop {
+            ping_interval.tick().await;
+            for addr in &ping_addrs {
+                let _ = send_socket.send_to(&my_id.to_be_bytes(), addr.as_str()).await;
             }
+        }
+    });
 
-            Ok((n, addr)) = ping_socket.recv_from(&mut ping_buf) => {
+    let mut ping_buf = [0u8; 64];
+    loop {
+        match ping_socket.recv_from(&mut ping_buf).await {
+            Ok((n, _)) => {
                 let received_id = ping_buf[..n][0];
                 let _ = ping_tx.send(received_id);
             }
+            Err(_) => continue,
         }
     }
 }

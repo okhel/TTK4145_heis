@@ -57,7 +57,7 @@ pub async fn recv_reliable(socket: &UdpSocket) -> std::io::Result<(Msg, u32, Soc
     }
 }
 
-const ACK_COPIES: usize = 3;
+const ACK_COPIES: usize = 5;
 
 async fn send_ack(
     socket: &UdpSocket,
