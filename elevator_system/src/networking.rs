@@ -251,7 +251,7 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
         ping_socket = init_socket(my_id, 30000).await;
         println!("Hearbeat success");
     }
-    let mut ping_interval = time::interval(Duration::from_millis(1000));
+    let mut ping_interval = time::interval(Duration::from_millis(50));
     let mut ping_buf = [0u8; 64];
 
     loop {

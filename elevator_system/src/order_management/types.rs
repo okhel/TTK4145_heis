@@ -9,7 +9,7 @@ pub struct Order {
 
 impl std::fmt::Display for Order {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}, elev {}", self.cb, self.elev_idx)
+        write!(f, "{} - elev {}", self.cb, self.elev_idx)
     }
 }
 
