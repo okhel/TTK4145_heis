@@ -29,14 +29,16 @@ pub const M: u8 = 3; // floors
 pub enum Event {
     StateUpdateAndShare { states: Vec<ElevatorState> },
     StateUpdate { states: Vec<ElevatorState> },
+    AlivesUpdate { alive_elevs: Vec<u8> },
+    
     RequestOrder { order: Order },
     WantOrder { completed_order: Order },
     QueueOrders { orders: Vec<Order> },
     AssignOrders { orders: Vec<Order> },
     CompleteOrder { order: Order },
     ClearOrders { orders: Vec<Order> },
-    AlivesUpdate { alive_elevs: Vec<u8> },
     
     AckReceived(Msg),
     OrderTimeout { elev_idx: usize },
+    IdleTimeout { elev_idx: usize },
 }

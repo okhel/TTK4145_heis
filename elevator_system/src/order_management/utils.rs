@@ -5,13 +5,10 @@ use colored::Colorize;
 
 
 pub fn is_mine(order: Order, idx: usize) -> bool {
-    if (order.elev_idx == idx) || order.cb.call != CallType::Cab {
-        return true;
-    }
-    false
+    order.elev_idx == idx || order.cb.call != CallType::Cab
 }
 
-pub fn assign_new_orders(
+pub fn assign_new_order(
     order: Order,
     orders: &mut VecDeque<Order>,
     positions: &HashMap<usize, u8>,
@@ -40,7 +37,7 @@ pub fn assign_new_orders(
         orders.retain(|o| o != &order);
         return Some(closest);
     }
-    else if available_elevs.len() > 0 { println!("No available elevator for: {}", order); }
+    else if !available_elevs.is_empty() { println!("No available elevator for: {}", order); }
 
     None
 }
@@ -125,7 +122,7 @@ pub fn assign_next_order(
         current_orders.insert(completed.elev_idx, Some(order.clone()));
         result.next = Some(order);
     }
-    else if eligible.len() > 0 { println!("{}", format!("Could not assign next order after: {}, eligible: [{}]", completed, eligible.iter().map(|o| format!("{}", o)).collect::<Vec<_>>().join(", ")).red().bold()); }
+    else if !eligible.is_empty() { println!("{}", format!("Could not assign next order after: {}, eligible: [{}]", completed, eligible.iter().map(|o| format!("{}", o)).collect::<Vec<_>>().join(", ")).red().bold()); }
 
     // overwrite result to give order to the relevant elevator, not the one that registered the order 
     if let Some(ref mut order) = result.next {
@@ -161,7 +158,7 @@ fn designate_busy_idle(
     (busy, idle)
 }
 
-fn rebuild_queue(orders: &mut VecDeque<Order>, order: Order) -> VecDeque<Order> {
+fn rebuild_queue(orders: &VecDeque<Order>, order: Order) -> VecDeque<Order> {
     let mut cab_orders: VecDeque<Order> = orders.iter().filter(|o| o.cb.call == CallType::Cab).cloned().collect();
     let mut hall_orders: VecDeque<Order> = orders.iter().filter(|o| o.cb.call != CallType::Cab).cloned().collect();
     let mut new_orders = VecDeque::with_capacity(orders.len() + 1);

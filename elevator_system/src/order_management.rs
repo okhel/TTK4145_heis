@@ -15,7 +15,7 @@ use crate::{
 use types::{Event, Order, Role};
 pub mod types;
 pub mod utils;
-use utils::{assign_new_orders, assign_next_order, is_mine};
+use utils::{assign_new_order, assign_next_order, is_mine};
 
 
 fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
@@ -79,6 +79,7 @@ pub async fn order_manager(
     let (wd_remove_tx, wd_remove_rx) = uc::<usize>();
     let (wd_expired_tx, mut wd_expired_rx) = uc::<usize>();
     let (want_order_tx, mut want_order_rx) = uc::<Order>();
+    let wd_remove_tx_clone = wd_remove_tx.clone();
 
     tokio::spawn(watchdog_timer(
         Duration::from_secs(15),
@@ -100,30 +101,26 @@ pub async fn order_manager(
 
     loop {
         let event = tokio::select! {
-            Some(cb)            = call_request_rx.recv() => Event::RequestOrder { order: Order { cb: cb, elev_idx: local_idx } },
-            Some(floor)         = update_floor_rx.recv()  => Event::StateUpdateAndShare { states: vec![ElevatorState {id: local_id, floor}] },
-            Some(cb)            = call_complete_rx.recv()  => Event::CompleteOrder { order: Order { cb: cb, elev_idx: local_id as usize } },
-            Ok(alive_elevs)     = mgmt_elevs_alive_rx.recv()  => Event::AlivesUpdate { alive_elevs },
-            Some(order)         = want_order_rx.recv()      => Event::WantOrder { completed_order: order },
-            Some(msg)           = network_rx.recv()        => match msg_to_event(msg, &state.role) {
-                Some(e) => e,
-                None    => continue,
-            },
-            Some((_seq, msg)) = ack_complete_rx.recv() => Event::AckReceived(msg),
-            Some(elev_idx)      = wd_expired_rx.recv() => Event::OrderTimeout { elev_idx },
-            _ = tokio::time::sleep_until(idle_deadline) => {
-                idle_deadline = Instant::now() + idle_timeout;
-                if let Some(&floor) = state.positions.get(&local_idx) {
-                    println!("{}", "Idle for 60 seconds -> kickstarting with cab completion".yellow());
-                    Event::WantOrder { completed_order: Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx: local_idx } }
-                } else {
-                    continue;
-                }
+
+            // Local messages
+            Some(cb)            = call_request_rx.recv()                    => Event::RequestOrder { order: Order { cb: cb, elev_idx: local_idx } },
+            Some(floor)         = update_floor_rx.recv()                    => Event::StateUpdateAndShare { states: vec![ElevatorState {id: local_id, floor}] },
+            Some(cb)            = call_complete_rx.recv()                   => Event::CompleteOrder { order: Order { cb: cb, elev_idx: local_id as usize } },
+            Ok(alive_elevs)     = mgmt_elevs_alive_rx.recv()                => Event::AlivesUpdate { alive_elevs },
+            Some(order)         = want_order_rx.recv()                      => Event::WantOrder { completed_order: order },
+            Some((_seq, msg))   = ack_complete_rx.recv()                    => Event::AckReceived(msg),
+            Some(elev_idx)      = wd_expired_rx.recv()                      => Event::OrderTimeout { elev_idx },
+            _                   = tokio::time::sleep_until(idle_deadline)   => Event::IdleTimeout { elev_idx: local_idx },
+
+            // Network messages
+            Some(msg)           = network_rx.recv()                         => match msg_to_event(msg, &state.role) {
+                                    Some(e) => e,
+                                    None    => continue,
             },
             else => panic!("All channels closed"),
         };
 
-        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx, &ack_complete_tx, &want_order_tx, &mut idle_deadline, idle_timeout);
+        handle_event(local_id, local_idx, event, &mut state, &call_assign_tx, &call_light_tx, &network_tx, &ack_complete_tx, &want_order_tx, &wd_remove_tx_clone, &mut idle_deadline, idle_timeout);
     }
 }
 
@@ -137,6 +134,7 @@ fn handle_event(
     network_tx: &UTx<Msg>,
     ack_complete_tx: &UTx<(u32, Msg)>,
     want_order_tx: &UTx<Order>,
+    wd_remove_tx: &UTx<usize>,
     idle_deadline: &mut Instant,
     idle_timeout: Duration,
 ) {
@@ -158,14 +156,7 @@ fn handle_event(
                     if is_mine(order.clone(), local_idx) { let _ = call_light_tx.send((order.clone().cb, true)); }
 
                     if let Some(order_elev_idx) = try_assign_new_order(order.clone(), state) {
-                        update_current_orders(state, order.clone(), order_elev_idx);
-                        if order_elev_idx == local_idx {
-                            let _ = call_assign_tx.send(order.cb.clone());
-                            *idle_deadline = Instant::now() + idle_timeout;
-                        }
-                        else {
-                            let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: order.cb.clone(), elev_idx: order_elev_idx }] });
-                        }
+                        send_order(order.clone(), Some(Order { cb: order.cb.clone(), elev_idx: order_elev_idx }), state, local_idx, call_assign_tx, network_tx, idle_deadline, idle_timeout);
                     }
                     else {
                         state.orders.push_back(order.clone());
@@ -200,18 +191,8 @@ fn handle_event(
         // Local message in master
         Event::WantOrder { completed_order } => {
             if state.role == Role::Master {
-                    let _ = state.wd_remove_tx.send(completed_order.elev_idx);
                     let (next_order, _) = try_assign_next_order(completed_order.clone(), state);
-                    if next_order.is_some() {
-                        update_current_orders(state, next_order.clone().unwrap(), next_order.clone().unwrap().elev_idx);
-
-                        // Send to master elevator or over network
-                        match next_order.clone().unwrap().elev_idx == local_idx {
-                            true => { let _ = call_assign_tx.send(next_order.as_ref().unwrap().cb.clone()); *idle_deadline = Instant::now() + idle_timeout; }
-                            false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: completed_order.elev_idx }] }); }
-                        }
-                        println!("{}", format!("\nAssigned next order: {}", next_order.as_ref().unwrap()).green().bold());
-                    }
+                    send_order(completed_order.clone(), next_order, state, local_idx, call_assign_tx, network_tx, idle_deadline, idle_timeout);
             }
         }
         
@@ -235,16 +216,8 @@ fn handle_event(
 
                     // println!("Orders: {:?}", state.orders);
                     // println!("Current orders: {:?}", state.current_orders);
-                    let _ = state.wd_remove_tx.send(order.elev_idx);
                     let (next_order, clear_orders) = try_assign_next_order(order.clone(), state);
-                    if next_order.is_some() {
-                        update_current_orders(state, next_order.clone().unwrap(), next_order.clone().unwrap().elev_idx);
-                        match next_order.clone().unwrap().elev_idx == local_idx {
-                            true => { let _ = call_assign_tx.send(next_order.as_ref().unwrap().cb.clone()); *idle_deadline = Instant::now() + idle_timeout; }
-                            false => { let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next_order.as_ref().unwrap().cb.clone(), elev_idx: order.elev_idx }] }); }
-                        }
-                        println!("{}", format!("\nAssigned next order: {}", next_order.as_ref().unwrap()).green().bold());
-                    }
+                    send_order(order.clone(), next_order, state, local_idx, call_assign_tx, network_tx, idle_deadline, idle_timeout);
                     if clear_orders.len() > 0 {
                         clear_these_orders(clear_orders.clone().into_iter().collect(), state, local_idx, call_light_tx);
                         let _ = network_tx.send(Msg::ClearOrders { orders: clear_orders.into_iter().collect() });
@@ -285,11 +258,22 @@ fn handle_event(
 
         Event::OrderTimeout { elev_idx } => {
             if state.role == Role::Master {
-                println!("{}", format!("Elev {} failed to complete in time", elev_idx).red().bold());
                 if let Some(Some(order)) = state.current_orders.remove(&elev_idx) {
                     println!("{}", format!("Order timed out, queued: {}", order).yellow().bold());
+                    let _ = wd_remove_tx.send(elev_idx);
                     let _ = ack_complete_tx.send((0, Msg::RequestOrder { order: order.clone() }));
                 }
+            }
+        }
+
+        Event::IdleTimeout { elev_idx } => {
+            if state.role == Role::Master {
+                if let Some(&floor) = state.positions.get(&elev_idx) {
+                    println!("{}", "Idle for 60 seconds, requesting work".yellow());
+                    let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
+                    let _ = want_order_tx.send(order);
+                }
+                *idle_deadline = Instant::now() + idle_timeout;
             }
         }
 
@@ -302,13 +286,15 @@ fn handle_event(
             state.alive_elevs = new_set.clone();
             state.network_ready = true;
 
-            let became_master;
-            if old_set.len() > 0 { became_master = !(old_set.iter().min() == new_set.iter().min());}
-            else { became_master = true; }
-            
-            match alive_elevs.iter().min() == Some(&local_id) {
-                true => { state.role = Role::Master; }
-                false => { state.role = Role::Slave; }
+            // let became_master = old_set.is_empty() || old_set.iter().min() != new_set.iter().min();
+            let mut became_master = false;
+
+            if alive_elevs.iter().min() == Some(&local_id) {
+                state.role = Role::Master;
+                became_master = old_set.is_empty() || old_set.iter().min() != new_set.iter().min();
+            } else {
+                state.role = Role::Slave;
+                
             }
 
 
@@ -333,7 +319,6 @@ fn handle_event(
                 }
             }
 
-            // println!("I'm {:?}", &state.role);
             // Sync orders and state with newly alive elevators
             if !newly_alive.is_empty() {
                 let orders_to_send: Vec<Order> = state.orders.iter().cloned().chain(state.current_orders.values().filter_map(|o| o.clone())).collect();
@@ -345,19 +330,24 @@ fn handle_event(
     }
 }
 
+
+fn send_order(completed_order: Order, next_order: Option<Order>, state: &mut ManagerState, local_idx: usize, call_assign_tx: &UTx<CallButton>, network_tx: &UTx<Msg>, idle_deadline: &mut Instant, idle_timeout: Duration) {
+    let _ = state.wd_remove_tx.send(completed_order.elev_idx);
+    if let Some(next) = next_order {
+        update_current_orders(state, next.clone(), next.elev_idx);
+        if next.elev_idx == local_idx {
+            let _ = call_assign_tx.send(next.cb.clone());
+            *idle_deadline = Instant::now() + idle_timeout;
+        } else {
+            let _ = network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next.cb.clone(), elev_idx: completed_order.elev_idx }] });
+        }
+        println!("{}", format!("\nAssigned next order: {}", next).green().bold());
+    }
+}
+
 fn update_current_orders(state: &mut ManagerState, order: Order, elev_idx: usize) {
     state.current_orders.insert(elev_idx, Some(order.clone()));
     let _ = state.wd_reset_tx.send(elev_idx);
-}
-
-fn try_assign_next_order(order: Order, state: &mut ManagerState) -> (Option<Order>, HashSet<Order>) {
-    let result = assign_next_order(order.clone(), &mut state.orders, &mut state.current_orders);
-    let clear_orders: HashSet<Order> = [
-        order.clone(),
-        Order { cb: CallButton { floor: order.cb.floor, call: CallType::Cab }, elev_idx: order.elev_idx },
-        ].into_iter().chain(result.clear).collect();
-
-    return (result.next, clear_orders);
 }
 
 fn clear_these_orders(completed_orders: Vec<Order>, state: &mut ManagerState, local_idx: usize, call_light_tx: &UTx<(CallButton, bool)>) {
@@ -372,10 +362,18 @@ fn clear_these_orders(completed_orders: Vec<Order>, state: &mut ManagerState, lo
     }
 }
 
+fn try_assign_next_order(order: Order, state: &mut ManagerState) -> (Option<Order>, HashSet<Order>) {
+    let result = assign_next_order(order.clone(), &mut state.orders, &mut state.current_orders);
+    let clear_orders: HashSet<Order> = [
+        order.clone(),
+        Order { cb: CallButton { floor: order.cb.floor, call: CallType::Cab }, elev_idx: order.elev_idx },
+        ].into_iter().chain(result.clear).collect();
 
+    return (result.next, clear_orders);
+}
 
 fn try_assign_new_order(order: Order, state: &mut ManagerState) -> Option<usize> {
-    let new_order_found = assign_new_orders(
+    let new_order_found = assign_new_order(
         order.clone(),
         &mut state.orders,
         &mut state.positions,
