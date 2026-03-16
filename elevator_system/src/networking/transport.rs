@@ -4,7 +4,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 
 const MAX_MSG_BYTES: usize = 65507;
-const ACK_TIMEOUT: Duration = Duration::from_millis(200);
+const ACK_TIMEOUT: Duration = Duration::from_millis(5);
 const MAX_RETRIES: u32 = 10;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -27,10 +27,10 @@ pub async fn send_reliable(
             Ok(Ok(())) => return Ok(()),
             Ok(Err(e)) => return Err(e),
             Err(_) => {
-                // eprintln!(
-                //     "ACK timeout for seq={seq}, attempt {}/{MAX_RETRIES}",
-                //     attempt + 1
-                // );
+                eprintln!(
+                    "ACK timeout for seq={seq}, attempt {}/{MAX_RETRIES}",
+                    attempt + 1
+                );
             }
         }
     }

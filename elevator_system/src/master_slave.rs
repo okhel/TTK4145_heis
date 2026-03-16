@@ -13,8 +13,8 @@ pub async fn store_online_elevators(
     mut ping_received_rx: URx<u8>,
 ) {
     let mut online_elevators: BTreeMap<u8, time::Instant> = BTreeMap::new();
-    let timeout_duration = Duration::from_millis(5000);
-    let debounce_duration = Duration::from_secs(1);
+    let timeout_duration = Duration::from_millis(1000);
+    let debounce_duration = Duration::from_millis(500);
 
     let mut debounce_deadline: Option<time::Instant> = None;
 
@@ -28,7 +28,7 @@ pub async fn store_online_elevators(
                 }
             }
 
-            _ = time::sleep(Duration::from_millis(500)) => {
+            _ = time::sleep(Duration::from_millis(5)) => {
                 let now = time::Instant::now();
                 let before_len = online_elevators.len();
 

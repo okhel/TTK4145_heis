@@ -97,7 +97,7 @@ pub async fn order_manager(
     ));
 
     tokio::spawn(watchdog_timer(
-        Duration::from_secs(5),
+        Duration::from_secs(3),
         idle_reset_rx,
         idle_remove_rx,
         idle_expired_tx,

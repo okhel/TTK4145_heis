@@ -17,7 +17,7 @@ use crate::networking::types::Msg;
 pub mod transport;
 pub mod types;
 
-const MAX_APP_RETRIES: u32 = 3;
+const MAX_APP_RETRIES: u32 = 1000;
 const DEDUP_WINDOW: Duration = Duration::from_secs(10);
 
 async fn init_socket(id:u8, port: u16) -> Arc<UdpSocket> {
@@ -203,7 +203,7 @@ pub async fn network_runner(
                             }
                         }
                     }
-                } else if retry_count < MAX_APP_RETRIES {
+                } else if retry_count < MAX_APP_RETRIES && peer_ids.contains(&peer_id){
                     spawn_send_task(
                         msg, addr, fail_seq, my_id, peer_id, retry_count + 1,
                         ack_tx.clone(), fail_tx.clone(),
@@ -251,7 +251,7 @@ async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) 
         ping_socket = init_socket(my_id, 30000).await;
         println!("Hearbeat success");
     }
-    let mut ping_interval = time::interval(Duration::from_millis(50));
+    let mut ping_interval = time::interval(Duration::from_millis(5));
     let mut ping_buf = [0u8; 64];
 
     loop {

@@ -12,7 +12,7 @@ pub mod networking;
 pub mod order_management;
 pub mod watchdog;
 
-pub const USER: &str = "MAC"; // "MAC" or "LAB"
+pub const USER: &str = "LAB"; // "MAC" or "LAB"
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
