@@ -17,8 +17,8 @@ use crate::networking::types::Msg;
 pub mod transport;
 pub mod types;
 
-const MAX_APP_RETRIES: u32 = 1000;
-const DEDUP_WINDOW: Duration = Duration::from_secs(10);
+const MAX_APP_RETRIES: u32 = 20;
+const DEDUP_WINDOW: Duration = Duration::from_secs(3);
 
 async fn init_socket(id:u8, port: u16) -> Arc<UdpSocket> {
     let addr: String;
@@ -110,7 +110,18 @@ pub async fn network_runner(
     loop {
         tokio::select! {
             // receive role updates from master_slave
-            Ok(alive) = alive_rx.recv() => {
+            result = alive_rx.recv() => {
+                let alive = match result {
+                    Ok(alive) => alive,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed messages; drain to latest
+                        match alive_rx.recv().await {
+                            Ok(alive) => alive,
+                            _ => continue,
+                        }
+                    }
+                    Err(_) => continue,
+                };
                 master_id = alive.first().copied();
                 is_master = master_id == Some(my_id);
                 peer_ids = alive.iter().filter(|&&id| id != my_id).cloned().collect();
@@ -125,7 +136,6 @@ pub async fn network_runner(
                         .map(|&id| (id, format!("10.100.23.{}:21000", id as u16)))
                         .collect();
                 }
-                
             }
 
             // route message based on role

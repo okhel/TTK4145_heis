@@ -42,7 +42,7 @@ async fn main() -> io::Result<()> {
     let order_ack_complete_tx = net_ack_complete_tx.clone();
 
 
-    let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(2);
+    let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(16);
     let mgmt_elevs_alive_rx = elevs_alive_tx.subscribe();
     let restart_elevs_alive_rx = elevs_alive_tx.subscribe();
 

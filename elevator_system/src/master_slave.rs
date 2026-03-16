@@ -14,7 +14,8 @@ pub async fn store_online_elevators(
 ) {
     let mut online_elevators: BTreeMap<u8, time::Instant> = BTreeMap::new();
     let timeout_duration = Duration::from_millis(1000);
-    let debounce_duration = Duration::from_millis(500);
+    let join_debounce: Duration = Duration::from_millis(50);
+    let leave_debounce: Duration = Duration::from_millis(200);
 
     let mut debounce_deadline: Option<time::Instant> = None;
 
@@ -24,7 +25,11 @@ pub async fn store_online_elevators(
                 let now = time::Instant::now();
                 
                 if online_elevators.insert(received_id, now).is_none() {
-                    debounce_deadline = Some(now + debounce_duration);
+                    let new_deadline = now + join_debounce;
+                    debounce_deadline = Some(match debounce_deadline {
+                        Some(existing) => existing.min(new_deadline),
+                        None => new_deadline,
+                    });
                 }
             }
 
@@ -39,7 +44,11 @@ pub async fn store_online_elevators(
                 });
 
                 if online_elevators.len() != before_len {
-                    debounce_deadline = Some(now + debounce_duration);
+                    let new_deadline = now + leave_debounce;
+                    debounce_deadline = Some(match debounce_deadline {
+                        Some(existing) => existing.min(new_deadline),
+                        None => new_deadline,
+                    });
                 }
             }
 

@@ -119,7 +119,16 @@ pub async fn order_manager(
             Some(cb)            = call_request_rx.recv()                    => Event::RequestOrder { order: Order { cb: cb, elev_idx: local_idx } },
             Some(floor)         = update_floor_rx.recv()                    => Event::StateUpdateAndShare { states: vec![ElevatorState {id: local_id, floor}] },
             Some(cb)            = call_complete_rx.recv()                   => Event::CompleteOrder { order: Order { cb: cb, elev_idx: local_id as usize } },
-            Ok(alive_elevs)     = mgmt_elevs_alive_rx.recv()                => Event::AlivesUpdate { alive_elevs },
+            result              = mgmt_elevs_alive_rx.recv()                => match result {
+                Ok(alive_elevs) => Event::AlivesUpdate { alive_elevs },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    match mgmt_elevs_alive_rx.recv().await {
+                        Ok(alive_elevs) => Event::AlivesUpdate { alive_elevs },
+                        _ => continue,
+                    }
+                }
+                Err(_) => continue,
+            },
             Some(order)         = want_order_rx.recv()                      => Event::WantOrder { completed_order: order },
             Some((_seq, msg))   = ack_complete_rx.recv()                    => Event::AckReceived(msg),
             Some(elev_idx)      = wd_expired_rx.recv()                      => Event::OrderTimeout { elev_idx },
