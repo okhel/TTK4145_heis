@@ -297,12 +297,13 @@ fn handle_event(
                         println!("{}", format!("Elev {} idle for 5 seconds, requesting work", elev_idx).yellow());
                         let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
                         let _ = want_order_tx.send(order);
+                        let _ = state.idle_reset_tx.send(elev_idx);
+
                     }
                     else {
                         let _ = state.idle_remove_tx.send(elev_idx);
                     }
                 }
-                // let _ = state.idle_reset_tx.send(elev_idx);
             }
         }
 
@@ -413,11 +414,13 @@ fn kickstart_idle_elevator(elev_idx: usize, state: &ManagerState, want_order_tx:
     if state.current_orders.get(&elev_idx).is_some() {
         println!("Elev {} already has work, resetting watchdog", elev_idx);
         let _ = state.wd_reset_tx.send(elev_idx);
+        return;
     }
     if let Some(&floor) = state.positions.get(&elev_idx) {
         println!("Kicking elev {} with work request", elev_idx);
         let pseudo_cb = CallButton { floor, call: CallType::Cab };
         let _ = want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
+        let _ = state.idle_reset_tx.send(elev_idx);
     } else {
         println!("No floor reading for elev {}, waiting for state update to kickstart", elev_idx);
         let _ = state.idle_reset_tx.send(elev_idx);
