@@ -20,7 +20,7 @@ pub async fn heartbeat_runner(
 
     let addrs = all_addrs.clone();
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_millis(10));
+        let mut interval = time::interval(Duration::from_millis(50));
         let payload = my_id.to_be_bytes();
 
         loop {

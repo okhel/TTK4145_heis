@@ -14,6 +14,7 @@ impl Elevator {
             let _ = call_light_assign_tx.send((CallButton {floor: i, call: CallType::HallDown}, false));
             let _ = call_light_assign_tx.send((CallButton {floor: i, call: CallType::HallUp}, false));
         }
+        self.io.door_light(false);
 
         // If not at a floor, go to start floor
         match URx::try_recv(&mut floor_sensor_rx) {

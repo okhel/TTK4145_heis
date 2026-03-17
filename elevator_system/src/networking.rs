@@ -94,11 +94,14 @@ pub async fn network_runner(
         tokio::select! {
             // update alive list when new elevs
             result = alive_rx.recv() => {
+                println!("[Rx]Online elevators{:?}", result);
                 let alive = match result {
                     Ok(a) => a,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        eprintln!("alive_rx lagged by {n} messages");
-                        continue;
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        match alive_rx.recv().await {
+                            Ok(a) => a,
+                            _ => continue,
+                        }
                     }
                     Err(_) => continue,
                 };

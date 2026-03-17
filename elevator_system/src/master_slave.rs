@@ -13,9 +13,9 @@ pub async fn store_online_elevators(
     mut ping_received_rx: URx<u8>,
 ) {
     let mut online_elevators: BTreeMap<u8, time::Instant> = BTreeMap::new();
-    let timeout_duration = Duration::from_millis(1000);
-    let join_debounce: Duration = Duration::from_millis(50);
-    let leave_debounce: Duration = Duration::from_millis(200);
+    let timeout_duration = Duration::from_millis(3000);
+    let join_debounce: Duration = Duration::from_millis(100);
+    let leave_debounce: Duration = Duration::from_millis(500);
 
     let mut debounce_deadline: Option<time::Instant> = None;
     let mut cleanup_interval = time::interval(Duration::from_millis(50));
@@ -175,7 +175,7 @@ pub fn start_instance(start_id: u8) {
         let host = format!("10.100.23.{}", start_id);
         let password = &load_password();
 
-        let kill_cmd = format!("pkill elevatorserver; pkill -f 'cargo run'");
+        let kill_cmd = format!("pkill -f 'cargo run'");
         let _ = Command::new("sshpass")
             .args([
                 "-p", password,
@@ -184,10 +184,14 @@ pub fn start_instance(start_id: u8) {
             ])
             .status();
 
+        // let remote_cmd = format!(
+        //     "nohup elevatorserver --port 250{} > /tmp/elevserv.log 2>&1 & \
+        //      nohup ~/.cargo/bin/cargo run --manifest-path ~/sanntid10/Cargo.toml -- {} > /tmp/elevator.log 2>&1 &",
+        //     start_id, start_id
+        // );
         let remote_cmd = format!(
-            "nohup elevatorserver --port 250{} > /tmp/elevserv.log 2>&1 & \
-             nohup ~/.cargo/bin/cargo run --manifest-path ~/sanntid10/Cargo.toml -- {} > /tmp/elevator.log 2>&1 &",
-            start_id, start_id
+            "~/.cargo/bin/cargo run --manifest-path ~/sanntid10/Cargo.toml -- {} > /tmp/elevator.log 2>&1",
+            start_id
         );
 
         let status = Command::new("sshpass")

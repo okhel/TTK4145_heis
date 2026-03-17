@@ -128,9 +128,11 @@ pub async fn order_manager(
             Some(cb)            = call_complete_rx.recv()                   => Event::CompleteOrder { order: Order { cb: cb, elev_idx: local_id as usize } },
             result              = mgmt_elevs_alive_rx.recv()                => match result {
                 Ok(alive_elevs) => Event::AlivesUpdate { alive_elevs },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    eprintln!("mgmt alive_rx lagged by {n} messages, catching up next iteration");
-                    continue;
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    match mgmt_elevs_alive_rx.recv().await {
+                        Ok(alive_elevs) => Event::AlivesUpdate { alive_elevs },
+                        _ => continue,
+                    }
                 }
                 Err(_) => continue,
             },

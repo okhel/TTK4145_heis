@@ -21,14 +21,17 @@ pub async fn send_reliable(
 ) -> std::io::Result<()> {
     let frame = Frame::Data { seq, msg: msg.clone() };
     let payload = bincode::serialize(&frame).expect("serialize failed");
-    for _attempt in 0..MAX_RETRIES {
-        if socket.send_to(&payload, addr).await.is_err() {
-            tokio::time::sleep(ACK_TIMEOUT).await;
-            continue;
-        }
+    for attempt in 0..MAX_RETRIES {
+        socket.send_to(&payload, addr).await?;
         match tokio::time::timeout(ACK_TIMEOUT, recv_ack(&socket, seq, &msg)).await {
-            Ok(true) => return Ok(()),
-            _ => continue,
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                eprintln!(
+                    "ACK timeout for seq={seq}, attempt {}/{MAX_RETRIES}",
+                    attempt + 1
+                );
+            }
         }
     }
     Err(std::io::Error::new(
@@ -42,17 +45,12 @@ pub async fn recv_reliable(
 ) -> std::io::Result<(Msg, u32, SocketAddr)> {
     let mut buf = vec![0u8; MAX_MSG_BYTES];
     loop {
-        let (len, addr) = match recv_socket.recv_from(&mut buf).await {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let frame: Frame = match bincode::deserialize(&buf[..len]) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
+        let (len, addr) = recv_socket.recv_from(&mut buf).await?;
+        let frame: Frame = bincode::deserialize(&buf[..len])
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         match frame {
             Frame::Data { seq, msg } => {
-                send_ack(ack_socket, seq, &msg, addr).await;
+                send_ack(ack_socket, seq, &msg, addr).await?;
                 return Ok((msg, seq, addr));
             }
             Frame::Ack { .. } => continue,
@@ -60,32 +58,33 @@ pub async fn recv_reliable(
     }
 }
 
-const ACK_COPIES: usize = 5;
+const ACK_COPIES: usize = 3;
 
-async fn send_ack(socket: &UdpSocket, seq: u32, msg: &Msg, addr: SocketAddr) {
+async fn send_ack(
+    socket: &UdpSocket,
+    seq: u32,
+    msg: &Msg,
+    addr: SocketAddr,
+) -> std::io::Result<()> {
     let frame = Frame::Ack {
         seq,
         msg: msg.clone(),
     };
     let payload = bincode::serialize(&frame).expect("serialize ack failed");
     for _ in 0..ACK_COPIES {
-        let _ = socket.send_to(&payload, addr).await;
+        socket.send_to(&payload, addr).await?;
     }
+    Ok(())
 }
 
-async fn recv_ack(socket: &UdpSocket, seq: u32, original_msg: &Msg) -> bool {
+async fn recv_ack(socket: &UdpSocket, seq: u32, original_msg: &Msg) -> std::io::Result<()> {
     let mut buf = vec![0u8; MAX_MSG_BYTES];
     loop {
-        let (len, _) = match socket.recv_from(&mut buf).await {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        let frame: Frame = match bincode::deserialize(&buf[..len]) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
+        let (len, _) = socket.recv_from(&mut buf).await?;
+        let frame: Frame = bincode::deserialize(&buf[..len])
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         match frame {
-            Frame::Ack { seq: s, msg } if s == seq && msg == *original_msg => return true,
+            Frame::Ack { seq: s, msg } if s == seq && msg == *original_msg => return Ok(()),
             _ => continue,
         }
     }
