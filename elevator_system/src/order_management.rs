@@ -368,7 +368,7 @@ fn handle_event(
 
 
 fn send_order(completed_order: Order, next_order: Option<Order>, state: &mut ManagerState, local_idx: usize, call_assign_tx: &UTx<CallButton>, network_tx: &UTx<Msg>) {
-    let _ = state.wd_remove_tx.send(completed_order.elev_idx);
+    let _ = state.wd_reset_tx.send(completed_order.elev_idx);
     if let Some(next) = next_order {
         update_current_orders(state, next.clone(), next.elev_idx);
         let _ = state.idle_remove_tx.send(next.elev_idx);
