@@ -3,6 +3,14 @@ use crate::order_management::types::{NextOrderResult, Order};
 use crate::elevator::elevio::poll::{CallButton, CallType};
 use colored::Colorize;
 
+fn remove_order_from_queue(orders: &mut VecDeque<Order>, order: &Order) {
+    if order.cb.call == CallType::Cab {
+        orders.retain(|o| o != order);
+    } else {
+        orders.retain(|o| o.cb != order.cb);
+    }
+}
+
 
 pub fn assign_new_order(
     order: Order,
@@ -11,7 +19,12 @@ pub fn assign_new_order(
     current_orders: &mut HashMap<usize, Option<Order>>,
     alive_elevs: &[usize],
 ) -> Option<usize> {
-    if orders.iter().any(|o| o == &order) {
+    let already_queued = if order.cb.call == CallType::Cab {
+        orders.iter().any(|o| o == &order)
+    } else {
+        orders.iter().any(|o| o.cb == order.cb)
+    };
+    if already_queued {
         return None;
     }
 
@@ -23,14 +36,14 @@ pub fn assign_new_order(
         pause_order(busy_elevs.clone(), &order, current_orders, positions)
     {
         orders.push_front(paused_order);
-        orders.retain(|o| o != &order);
+        remove_order_from_queue(orders, &order);
         current_orders.insert(elev_idx, Some(order));
         return Some(elev_idx);
     }
 
     if let Some(closest) = find_closest_elev(available_elevs.clone(), &order, positions) {
         current_orders.insert(closest, Some(order.clone()));
-        orders.retain(|o| o != &order);
+        remove_order_from_queue(orders, &order);
         return Some(closest);
     }
     else if !available_elevs.is_empty() { println!("No available elevator for: {}", order); }
@@ -114,7 +127,7 @@ pub fn assign_next_order(
             eligible,
             completed.clone(),
         );
-        orders.retain(|o| o != &order);
+        remove_order_from_queue(orders, &order);
         current_orders.insert(completed.elev_idx, Some(order.clone()));
         result.next = Some(order);
     }
