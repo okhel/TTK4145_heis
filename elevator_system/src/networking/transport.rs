@@ -39,20 +39,21 @@ pub async fn send_reliable(
         format!("no ACK after {MAX_RETRIES} attempts"),
     ))
 }
-pub async fn recv_reliable(socket: &UdpSocket) -> std::io::Result<(Msg, u32, SocketAddr)> {
+pub async fn recv_reliable(
+    recv_socket: &UdpSocket,
+    ack_socket: &UdpSocket,
+) -> std::io::Result<(Msg, u32, SocketAddr)> {
     let mut buf = vec![0u8; MAX_MSG_BYTES];
     loop {
-        let (len, addr) = socket.recv_from(&mut buf).await?;
+        let (len, addr) = recv_socket.recv_from(&mut buf).await?;
         let frame: Frame = bincode::deserialize(&buf[..len])
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         match frame {
             Frame::Data { seq, msg } => {
-                send_ack(socket, seq, &msg, addr).await?;
+                send_ack(ack_socket, seq, &msg, addr).await?;
                 return Ok((msg, seq, addr));
             }
-            Frame::Ack { .. } => {
-                continue;
-            }
+            Frame::Ack { .. } => continue,
         }
     }
 }

@@ -12,12 +12,17 @@ pub async fn store_online_elevators(
     elevs_alive_tx: BcTx<Vec<u8>>,
     mut ping_received_rx: URx<u8>,
 ) {
+<<<<<<< networking_readability_refactor
+    let mut online_elevators: BTreeMap<u8, time::Instant> = BTreeMap::new();
+=======
     let mut online_elevators: BTreeMap<u8, Instant> = BTreeMap::new();
+>>>>>>> main
     let timeout_duration = Duration::from_millis(3000);
     let join_debounce: Duration = Duration::from_millis(100);
     let leave_debounce: Duration = Duration::from_millis(500);
 
     let mut debounce_deadline: Option<time::Instant> = None;
+    let mut cleanup_interval = time::interval(Duration::from_millis(50));
 
     loop {
         tokio::select! {
@@ -33,7 +38,11 @@ pub async fn store_online_elevators(
                 }
             }
 
+<<<<<<< networking_readability_refactor
+            _ = cleanup_interval.tick() => {
+=======
             _ = time::sleep(Duration::from_millis(10)) => {
+>>>>>>> main
                 let now = time::Instant::now();
                 let before_len = online_elevators.len();
 
@@ -174,7 +183,7 @@ pub fn start_instance(start_id: u8) {
         let host = format!("10.100.23.{}", start_id);
         let password = &load_password();
 
-        let kill_cmd = format!("pkill elevatorserver; pkill -f 'cargo run'");
+        let kill_cmd = format!("pkill -f 'cargo run'");
         let _ = Command::new("sshpass")
             .args([
                 "-p", password,
@@ -183,10 +192,14 @@ pub fn start_instance(start_id: u8) {
             ])
             .status();
 
+        // let remote_cmd = format!(
+        //     "nohup elevatorserver --port 250{} > /tmp/elevserv.log 2>&1 & \
+        //      nohup ~/.cargo/bin/cargo run --manifest-path ~/sanntid10/Cargo.toml -- {} > /tmp/elevator.log 2>&1 &",
+        //     start_id, start_id
+        // );
         let remote_cmd = format!(
-            "nohup elevatorserver --port 250{} > /tmp/elevserv.log 2>&1 & \
-             nohup ~/.cargo/bin/cargo run --manifest-path ~/sanntid10/Cargo.toml -- {} > /tmp/elevator.log 2>&1 &",
-            start_id, start_id
+            "~/.cargo/bin/cargo run --manifest-path ~/sanntid10/Cargo.toml -- {} > /tmp/elevator.log 2>&1",
+            start_id
         );
 
         let status = Command::new("sshpass")
