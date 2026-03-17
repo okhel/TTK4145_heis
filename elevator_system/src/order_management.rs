@@ -326,12 +326,36 @@ fn handle_event(
             let pseudo_cb = CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab };
             if state.role == Role::Master {
                 if became_master {
-                    // println!("Change of master");
                     if state.current_orders.get(&local_idx).is_none() {
                         let _ = want_order_tx.send(Order { cb: pseudo_cb.clone(), elev_idx: local_idx });
                     }
                     else {
                         let _ = state.wd_reset_tx.send(local_idx);
+                    }
+
+                    // Start idle timer for all elevators
+                    for elev_idx in new_set.iter().copied() {
+                        if state.current_orders.get(&elev_idx).is_none() {
+                            let _ = state.idle_reset_tx.send(elev_idx);
+                        }
+                    }
+
+                    // Iterate through positions and request work for elevators that are not currently working
+                    for (elev_idx, floor) in state.positions.iter() {
+                        if state.current_orders.get(elev_idx).is_none() {
+                            let pseudo_cb = CallButton { floor: *floor, call: CallType::Cab };
+                            let _ = want_order_tx.send(Order { cb: pseudo_cb, elev_idx: *elev_idx });
+                        }
+                    }
+
+
+                }
+                else {
+                    // Start idle timer for all newly alive elevators
+                    for elev_idx in &newly_alive {
+                        if state.current_orders.get(elev_idx).is_none() {
+                            let _ = state.idle_reset_tx.send(*elev_idx);
+                        }
                     }
                 }
 
@@ -347,11 +371,7 @@ fn handle_event(
                     }
                 }
 
-                for elev_idx in &newly_alive {
-                    if state.current_orders.get(elev_idx).is_none() {
-                        let _ = state.idle_reset_tx.send(*elev_idx);
-                    }
-                }
+                
             }
 
             // Sync orders and state with newly alive elevators
