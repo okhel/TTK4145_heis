@@ -213,8 +213,8 @@ fn handle_event(
         // Local message in master
         Event::WantOrder { completed_order } => {
             if state.role == Role::Master {
-                    let (next_order, _) = try_assign_next_order(completed_order.clone(), state);
-                    send_order(completed_order.clone(), next_order, state, local_idx, call_assign_tx, network_tx);
+                let (next_order, _) = try_assign_next_order(completed_order.clone(), state);
+                send_order(completed_order.clone(), next_order, state, local_idx, call_assign_tx, network_tx);
             }
         }
         
@@ -298,8 +298,11 @@ fn handle_event(
                         let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
                         let _ = want_order_tx.send(order);
                     }
+                    else {
+                        let _ = state.idle_remove_tx.send(elev_idx);
+                    }
                 }
-                let _ = state.idle_reset_tx.send(elev_idx);
+                // let _ = state.idle_reset_tx.send(elev_idx);
             }
         }
 
@@ -326,29 +329,20 @@ fn handle_event(
             let pseudo_cb = CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab };
             if state.role == Role::Master {
                 if became_master {
-                    if state.current_orders.get(&local_idx).is_none() {
-                        let _ = want_order_tx.send(Order { cb: pseudo_cb.clone(), elev_idx: local_idx });
-                    }
-                    else {
-                        let _ = state.wd_reset_tx.send(local_idx);
-                    }
 
                     // Start idle timer for all elevators
                     for elev_idx in new_set.iter().copied() {
                         if state.current_orders.get(&elev_idx).is_none() {
-                            let _ = state.idle_reset_tx.send(elev_idx);
+                            if let Some(floor) = state.positions.get(&elev_idx) {
+                                let pseudo_cb = CallButton { floor: *floor, call: CallType::Cab };
+                                let _ = want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
+                            }
+                            else {
+                                println!("No floor reading for elev {}, waiting for state update to kickstart", elev_idx);
+                                let _ = state.idle_reset_tx.send(elev_idx);
+                            }
                         }
                     }
-
-                    // Iterate through positions and request work for elevators that are not currently working
-                    for (elev_idx, floor) in state.positions.iter() {
-                        if state.current_orders.get(elev_idx).is_none() {
-                            let pseudo_cb = CallButton { floor: *floor, call: CallType::Cab };
-                            let _ = want_order_tx.send(Order { cb: pseudo_cb, elev_idx: *elev_idx });
-                        }
-                    }
-
-
                 }
                 else {
                     // Start idle timer for all newly alive elevators
