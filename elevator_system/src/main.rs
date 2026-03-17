@@ -22,7 +22,7 @@ async fn main() -> io::Result<()> {
 
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
-    let restart_remote_ids = remote_ids.clone();
+    //let restart_remote_ids = remote_ids.clone();
     // println!("I'm {}", local_id);
     
     // Elevator channels (CallButton-based)
@@ -44,7 +44,7 @@ async fn main() -> io::Result<()> {
 
     let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(16);
     let mgmt_elevs_alive_rx = elevs_alive_tx.subscribe();
-    let restart_elevs_alive_rx = elevs_alive_tx.subscribe();
+    //let restart_elevs_alive_rx = elevs_alive_tx.subscribe();
 
     let elevator_task = tokio::spawn(async move {
         elevator::elevator_runner(

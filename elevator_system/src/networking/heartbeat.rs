@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::net::SocketAddr;
 
 use tokio::sync::{
@@ -26,7 +26,7 @@ pub async fn heartbeat_runner(
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    for (&id, &addr) in &addrs {
+                    for (&_id, &addr) in &addrs {
                         let _ = send_socket.send_to(&payload, addr).await;
                     }
                 }
