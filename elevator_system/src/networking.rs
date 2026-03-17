@@ -15,7 +15,7 @@ use tokio::sync::{
     mpsc::UnboundedSender as UTx,
     Mutex,
 };
-use tokio::time::{Duration, Instant};
+use tokio::time::{Duration, Instant, interval};
 
 use crate::USER;
 use address::{bind, random_port_addr, local_addr, peer_msg_addr, peer_ping_addr};
@@ -169,7 +169,6 @@ pub async fn network_runner(
     }
 }
 
-<<<<<<< networking_readability_refactor
 
 
 async fn handle_send_failure(
@@ -198,42 +197,9 @@ async fn handle_send_failure(
                 drop(map);
                 spawn_send_task(ctx, msg, new_addr, seq, new_master, 0);
                 return;
-=======
-async fn heartbeat_runner(my_id: u8, ping_addrs: Vec<String>, ping_tx: UTx<u8>) {
-
-    let ping_socket: Arc<UdpSocket>;
-    if USER == "MAC" {
-        ping_socket = init_socket(my_id, 30000 + my_id as u16).await;
-    } else {
-        ping_socket = init_socket(my_id, 30000).await;
-    }
-
-    let recv_socket = ping_socket.clone();
-    let send_socket = ping_socket.clone();
-
-    // RECEIVE TASK
-    tokio::spawn(async move {
-        let mut buf = [0u8; 64];
-
-        loop {
-            if let Ok((n, _addr)) = recv_socket.recv_from(&mut buf).await {
-                let received_id = buf[..n][0];
-                let _ = ping_tx.send(received_id);
->>>>>>> main
             }
         }
-    });
-
-    // SEND LOOP
-    let mut interval = time::interval(Duration::from_millis(50));
-
-    loop {
-        interval.tick().await;
-
-        for addr in &ping_addrs {
-            let _ = send_socket.send_to(&my_id.to_be_bytes(), addr).await;
-        }
-    }
+    };
 
     // retry if just transient failure
     if retry < MAX_APP_RETRIES && peer_ids.contains(&failed_peer) {
