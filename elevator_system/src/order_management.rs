@@ -325,31 +325,18 @@ fn handle_event(
                 
             }
 
-
-            let pseudo_cb = CallButton { floor: state.positions.get(&local_idx).unwrap().clone(), call: CallType::Cab };
             if state.role == Role::Master {
                 if became_master {
 
                     // Start idle timer for all elevators
                     for elev_idx in new_set.iter().copied() {
-                        if state.current_orders.get(&elev_idx).is_none() {
-                            if let Some(floor) = state.positions.get(&elev_idx) {
-                                let pseudo_cb = CallButton { floor: *floor, call: CallType::Cab };
-                                let _ = want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
-                            }
-                            else {
-                                println!("No floor reading for elev {}, waiting for state update to kickstart", elev_idx);
-                                let _ = state.idle_reset_tx.send(elev_idx);
-                            }
-                        }
+                        kickstart_idle_elevator(elev_idx, &state, &want_order_tx);
                     }
                 }
                 else {
                     // Start idle timer for all newly alive elevators
-                    for elev_idx in &newly_alive {
-                        if state.current_orders.get(elev_idx).is_none() {
-                            let _ = state.idle_reset_tx.send(*elev_idx);
-                        }
+                    for &elev_idx in &newly_alive {
+                        kickstart_idle_elevator(elev_idx, &state, &want_order_tx);
                     }
                 }
 
@@ -420,6 +407,21 @@ fn try_assign_next_order(order: Order, state: &mut ManagerState) -> (Option<Orde
         ].into_iter().chain(result.clear).collect();
 
     return (result.next, clear_orders);
+}
+
+fn kickstart_idle_elevator(elev_idx: usize, state: &ManagerState, want_order_tx: &UTx<Order>) {
+    if state.current_orders.get(&elev_idx).is_some() {
+        println!("Elev {} already has work, resetting watchdog", elev_idx);
+        let _ = state.wd_reset_tx.send(elev_idx);
+    }
+    if let Some(&floor) = state.positions.get(&elev_idx) {
+        println!("Kicking elev {} with work request", elev_idx);
+        let pseudo_cb = CallButton { floor, call: CallType::Cab };
+        let _ = want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
+    } else {
+        println!("No floor reading for elev {}, waiting for state update to kickstart", elev_idx);
+        let _ = state.idle_reset_tx.send(elev_idx);
+    }
 }
 
 fn try_assign_new_order(order: Order, state: &mut ManagerState) -> Option<usize> {
