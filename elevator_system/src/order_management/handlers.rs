@@ -45,9 +45,9 @@ impl ManagerState {
 
                 if let Some(order_elev_idx) = self.try_assign_new_order(order.clone()) {
                     self.send_order(order.clone(), Some(Order { cb: order.cb.clone(), elev_idx: order_elev_idx }));
-                } else {
-                    self.orders.push_back(order.clone());
                 }
+                // if try_assign_new_order returns None, the order is already
+                // in self.orders from rebuild_queue inside assign_new_order
             }
         }
     }
@@ -70,7 +70,7 @@ impl ManagerState {
     // Slave should assign the order to the elevator
     fn on_assign_orders(&self, orders: Vec<Order>) {
         for order in orders {
-            if is_mine(&order, self.local_idx) {
+            if order.elev_idx == self.local_idx {
                 println!("Received order: {} assigned to me", order);
                 let _ = self.call_assign_tx.send(order.cb.clone());
             }
@@ -237,7 +237,7 @@ impl ManagerState {
             if next.elev_idx == self.local_idx {
                 let _ = self.call_assign_tx.send(next.cb.clone());
             } else {
-                let _ = self.network_tx.send(Msg::AssignOrders { orders: vec![Order { cb: next.cb.clone(), elev_idx: completed_order.elev_idx }] });
+                let _ = self.network_tx.send(Msg::AssignOrders { orders: vec![next.clone()] });
             }
             println!("{}", format!("\nAssigned next order: {}", next).green().bold());
         }
