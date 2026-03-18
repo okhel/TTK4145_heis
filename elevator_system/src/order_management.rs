@@ -19,7 +19,7 @@ pub mod assignment;
 
 fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
     match msg {
-        Msg::RequestOrder { order }                  => if role == &Role::Master { Some(Event::RequestOrder { order }) } else { None },
+        Msg::RequestOrder { order }                  => if role == &Role::Master { Some(Event::RequestOrder { order }) } else { Some(Event::QueueOrders { orders: vec![order] }) },
         Msg::QueueOrders { orders }             => Some(Event::QueueOrders { orders }),
         Msg::AssignOrders { orders }                   => Some(Event::AssignOrders { orders }),
         Msg::CompleteOrder { order }                 => Some(Event::CompleteOrder { order }),

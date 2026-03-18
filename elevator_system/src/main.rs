@@ -1,5 +1,5 @@
 use std::env;
-use std::io;
+use std::{io, panic};
 
 use tokio::{sync::{mpsc::unbounded_channel as uc, broadcast as bc}};
 
@@ -14,13 +14,21 @@ pub mod networking;
 pub mod order_management;
 pub mod watchdog;
 
-pub const USER: &str = "MAC"; // "MAC" or "LAB"
+pub const USER: &str = "LAB"; // "MAC" or "LAB"
+
+fn on_panic(local_id: u8) {
+    std::process::abort();
+}
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
 
     let local_id: u8 = env::args().last().unwrap().parse().unwrap();
     let mut ids = vec![19, 20, 21];
+
+    panic::set_hook(Box::new(move |_info| {
+        on_panic(local_id)
+      }));
 
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
