@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use crate::networking::types::Position;
 use crate::order_management::types::{NextOrderResult, Order};
 use crate::elevator::elevio::poll::{CallButton, CallType};
 use colored::Colorize;
@@ -15,7 +16,7 @@ fn remove_order_from_queue(orders: &mut VecDeque<Order>, order: &Order) {
 pub fn assign_new_order(
     order: Order,
     orders: &mut VecDeque<Order>,
-    positions: &HashMap<usize, u8>,
+    positions: &HashMap<usize, Position>,
     current_orders: &mut HashMap<usize, Option<Order>>,
     alive_elevs: &[usize],
 ) -> Option<usize> {
@@ -30,7 +31,7 @@ pub fn assign_new_order(
 
     *orders = rebuild_queue(orders, order.clone());
     let (busy_elevs, available_elevs) =
-        designate_busy_idle(alive_elevs.to_vec(), current_orders, order.clone());
+        designate_busy_idle(alive_elevs.to_vec(), current_orders, order.clone(), positions);
 
     if let Some((elev_idx, paused_order)) =
         pause_order(busy_elevs.clone(), &order, current_orders, positions)
@@ -157,12 +158,13 @@ fn designate_busy_idle(
     alive_elevs: Vec<usize>,
     current_orders: &HashMap<usize, Option<Order>>,
     order: Order,
+    positions: &HashMap<usize, Position>,
 ) -> (Vec<usize>, Vec<usize>) {
     let busy: Vec<usize> = alive_elevs.iter().copied()
-        .filter(|&i| current_orders.get(&i).and_then(|o| o.as_ref()).is_some())
+        .filter(|&i| current_orders.get(&i).and_then(|o| o.as_ref()).is_some() && Some(positions.get(&i).unwrap().obstruction) == Some(false))
         .collect();
     let idle: Vec<usize> = alive_elevs.iter().copied()
-        .filter(|&i| !busy.contains(&i) && is_mine(&order, i))
+        .filter(|&i| !busy.contains(&i) && is_mine(&order, i) && Some(positions.get(&i).unwrap().obstruction) == Some(false))
         .collect();
     (busy, idle)
 }
@@ -194,24 +196,24 @@ fn order_on_the_way(elev_idx: usize, position: u8, curr_order: Order, new_order:
 fn find_closest_elev(
     candidates: Vec<usize>,
     order: &Order,
-    positions: &HashMap<usize, u8>,
+    positions: &HashMap<usize, Position>,
 ) -> Option<usize> {
     candidates.into_iter()
-        .filter_map(|idx| positions.get(&idx).map(|&pos| (idx, pos)))
-        .min_by_key(|&(_, pos)| u8::abs_diff(pos, order.cb.floor))
+        .filter_map(|idx| positions.get(&idx).map(|pos| (idx, pos)))
+        .min_by_key(|&(_, state)| u8::abs_diff(state.floor, order.cb.floor))
         .map(|(idx, _)| idx)
-}
+}       
 
 fn pause_order(
     busy_elevs: Vec<usize>,
     order: &Order,
     current_orders: &HashMap<usize, Option<Order>>,
-    positions: &HashMap<usize, u8>,
+    positions: &HashMap<usize, Position>,
 ) -> Option<(usize, Order)> {
     busy_elevs.into_iter().find_map(|idx| {
         let curr = current_orders.get(&idx)?.as_ref()?.clone();
-        let &pos = positions.get(&idx)?;
-        if order_on_the_way(idx, pos, curr.clone(), order.clone()) {
+        let pos = positions.get(&idx)?;
+        if order_on_the_way(idx, pos.floor, curr.clone(), order.clone()) {
             Some((idx, curr))
         } else {
             None

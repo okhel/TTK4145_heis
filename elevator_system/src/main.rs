@@ -6,6 +6,8 @@ use tokio::{sync::{mpsc::unbounded_channel as uc, broadcast as bc}};
 use elevator::elevio::poll::CallButton;
 use networking::types::Msg;
 
+use crate::networking::types::Position;
+
 pub mod elevator;
 pub mod master_slave;
 pub mod networking;
@@ -28,7 +30,7 @@ async fn main() -> io::Result<()> {
     // Elevator channels (CallButton-based)
     let (call_request_tx, call_request_rx) = uc::<CallButton>();
     let (call_assign_tx, call_assign_rx) = uc::<CallButton>();
-    let (update_floor_tx, update_floor_rx) = uc::<u8>();
+    let (update_state_tx, update_state_rx) = uc::<Position>();
     let (call_complete_tx, call_complete_rx) = uc::<CallButton>();
     let (call_light_assign_tx, call_light_assign_rx) = uc::<(CallButton, bool)>();
     let init_call_light_assign_tx = call_light_assign_tx.clone();
@@ -51,7 +53,7 @@ async fn main() -> io::Result<()> {
             local_id,
             call_request_tx,
             call_assign_rx,
-            update_floor_tx,
+            update_state_tx,
             call_complete_tx,
             call_light_assign_rx,
             init_call_light_assign_tx
@@ -77,7 +79,7 @@ async fn main() -> io::Result<()> {
             local_id,
             call_request_rx,
             call_assign_tx,
-            update_floor_rx,
+            update_state_rx,
             call_complete_rx,
             call_light_assign_tx,
             network_inbox_tx,

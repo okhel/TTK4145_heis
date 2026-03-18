@@ -1,12 +1,13 @@
 use crate::elevator::{Elevator, NUM_FLOORS, elevio};
 use crate::elevator::elevio::poll::{CallButton, CallType};
+use crate::networking::types::Position;
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 use tokio::time::{sleep, Duration};
 
 impl Elevator {
 
     // Go to a floor, cannot be called if not at a floor
-    pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_floor_tx: UTx<u8>, call_complete_tx: UTx<CallButton>, call_light_assign_tx: UTx<(CallButton, bool)>) {
+    pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_state_tx: UTx<Position>, call_complete_tx: UTx<CallButton>, call_light_assign_tx: UTx<(CallButton, bool)>) {
         
         // Turn off all lights before initilaizing them
         for i in 0..NUM_FLOORS {
@@ -33,7 +34,7 @@ impl Elevator {
             }
         };
 
-        let _ = update_floor_tx.send(self.last_floor.lock().unwrap().unwrap());
+        let _ = update_state_tx.send(Position { floor: self.last_floor.lock().unwrap().unwrap(), obstruction: *self.obstruction_state.lock().unwrap() });
         
         let mut direction: Option<u8> = Some(elevio::elev::DIRN_STOP);
         let mut target_call: CallButton = CallButton { floor: 0, call: CallType::HallUp };
@@ -76,7 +77,7 @@ impl Elevator {
                     if let Some(floor) = floor_opt {
                         between_floors = false;
                         *self.last_floor.lock().unwrap() = Some(floor);
-                        let _ = update_floor_tx.send(floor);
+                        let _ = update_state_tx.send(Position { floor, obstruction: *self.obstruction_state.lock().unwrap() });
 
                         if floor == target_call.floor {
                             direction = Some(elevio::elev::DIRN_STOP);
@@ -101,7 +102,7 @@ impl Elevator {
         }
     }
 
-    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, mut obstruction_rx: URx<bool>, call_request_tx: UTx<CallButton>) {
+    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, mut obstruction_rx: URx<bool>, call_request_tx: UTx<CallButton>, update_state_tx: UTx<Position>) {
         loop {
             tokio::select! {
                 
@@ -112,6 +113,7 @@ impl Elevator {
                 Some(_) = obstruction_rx.recv() => {
                     let mut obs = self.obstruction_state.lock().unwrap();
                     *obs = !*obs;
+                    update_state_tx.send(Position { floor: self.last_floor.lock().unwrap().unwrap(), obstruction: *obs }).unwrap();
                 }
 
             }

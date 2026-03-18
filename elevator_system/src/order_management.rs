@@ -8,7 +8,7 @@ use tokio::time::Duration;
 
 use crate::{
     elevator::elevio::poll::CallButton,
-    networking::types::{ElevatorState, Msg},
+    networking::types::{ElevatorState, Msg, Position},
     watchdog::watchdog_timer,
 };
 
@@ -33,7 +33,7 @@ fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
 }
 pub(crate) struct ManagerState {
     pub orders: VecDeque<Order>,
-    pub positions: HashMap<usize, u8>,
+    pub positions: HashMap<usize, Position>,
     pub current_orders: HashMap<usize, Option<Order>>,
     pub alive_elevs: HashSet<usize>,
     pub pending_acks: HashMap<Order, Order>,
@@ -58,7 +58,7 @@ pub async fn order_manager(
     local_id: u8,
     mut call_request_rx: URx<CallButton>,
     call_assign_tx: UTx<CallButton>,
-    mut update_floor_rx: URx<u8>,
+    mut update_state_rx: URx<Position>,
     mut call_complete_rx: URx<CallButton>,
     call_light_assign_tx: UTx<(CallButton, bool)>,
     network_inbox_tx: UTx<Msg>,
@@ -113,8 +113,8 @@ pub async fn order_manager(
     };
 
     // Wait for initial floor reading, this signifies that the elevator is ready to receive orders
-    let init_floor = update_floor_rx.recv().await.unwrap();
-    state.positions.insert(local_idx, init_floor);
+    let Position { floor: init_floor, obstruction: init_obstruction } = update_state_rx.recv().await.unwrap();
+    state.positions.insert(local_idx, Position { floor: init_floor, obstruction: init_obstruction });
     println!("{}", format!("Elev {} ready at floor {}", local_idx, init_floor).green().bold());
 
     
@@ -124,7 +124,7 @@ pub async fn order_manager(
 
             // Local messages
             Some(cb)            = call_request_rx.recv()                    => Event::RequestOrder { order: Order { cb: cb, elev_idx: local_idx } },
-            Some(floor)         = update_floor_rx.recv()                    => Event::StateUpdateAndShare { states: vec![ElevatorState {id: local_id, floor}] },
+            Some(Position { floor, obstruction }) = update_state_rx.recv()                    => Event::StateUpdateAndShare { states: vec![ElevatorState {id: local_id, floor, obstruction}] },
             Some(cb)            = call_complete_rx.recv()                   => Event::CompleteOrder { order: Order { cb: cb, elev_idx: local_id as usize } },
             result              = mgmt_elevs_alive_rx.recv()                => match result {
                 Ok(alive_elevs) => Event::AlivesUpdate { alive_elevs },

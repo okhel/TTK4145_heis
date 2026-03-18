@@ -10,9 +10,16 @@ pub const NUM_FLOORS: u8 = 4;
 // core types
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Position {
+    pub floor: u8,
+    pub obstruction: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ElevatorState {
     pub id: u8,
     pub floor: u8,
+    pub obstruction: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

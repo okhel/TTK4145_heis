@@ -3,7 +3,7 @@ use colored::Colorize;
 
 use crate::{
     elevator::elevio::poll::{CallButton, CallType},
-    networking::types::{ElevatorState, Msg},
+    networking::types::{ElevatorState, Msg, Position},
 };
 
 use super::ManagerState;
@@ -122,14 +122,14 @@ impl ManagerState {
     // Got a state update from another elevator
     fn on_state_update(&mut self, states: Vec<ElevatorState>) {
         for new_state in states {
-            self.positions.insert(new_state.id as usize, new_state.floor);
+            self.positions.insert(new_state.id as usize, Position { floor: new_state.floor, obstruction: new_state.obstruction });
         }
     }
 
     // Need to inform other elevators about the new state
     fn on_state_update_and_share(&mut self, states: Vec<ElevatorState>) {
         for new_state in &states {
-            self.positions.insert(new_state.id as usize, new_state.floor);
+            self.positions.insert(new_state.id as usize, Position { floor: new_state.floor, obstruction: new_state.obstruction });
         }
         if self.network_ready {
             let _ = self.network_tx.send(Msg::StateUpdate { states: states.clone() });
@@ -137,7 +137,7 @@ impl ManagerState {
         if self.role == Role::Master {
             for elev_idx in states.iter().map(|s| s.id as usize) {
                 if self.current_orders.get(&elev_idx).is_none() {
-                    let floor = *self.positions.get(&elev_idx).unwrap();
+                    let Position { floor, obstruction: _obstruction } = *self.positions.get(&elev_idx).unwrap();
                     let pseudo_cb = CallButton { floor, call: CallType::Cab };
                     let _ = self.want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
                 }
@@ -159,7 +159,7 @@ impl ManagerState {
 
     fn on_idle_timeout(&mut self, elev_idx: usize) {
         if self.role == Role::Master {
-            if let Some(&floor) = self.positions.get(&elev_idx) {
+            if let Some(&Position { floor, obstruction: _obstruction }) = self.positions.get(&elev_idx) {
                 if self.current_orders.get(&elev_idx).is_none() {
                     println!("{}", format!("Elev {} idle for 5 seconds, requesting work", elev_idx).yellow());
                     let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
@@ -221,7 +221,7 @@ impl ManagerState {
         // Sync orders and state with newly alive elevators
         if !newly_alive.is_empty() {
             let orders_to_send: Vec<Order> = self.orders.iter().cloned().chain(self.current_orders.values().filter_map(|o| o.clone())).collect();
-            let states_to_send: Vec<ElevatorState> = self.positions.iter().map(|(id, floor)| ElevatorState { id: *id as u8, floor: *floor }).collect();
+            let states_to_send: Vec<ElevatorState> = self.positions.iter().map(|(id, position)| ElevatorState { id: *id as u8, floor: position.floor, obstruction: position.obstruction }).collect();
             let _ = self.network_tx.send(Msg::QueueOrders { orders: orders_to_send });
             let _ = self.network_tx.send(Msg::StateUpdate { states: states_to_send });
         }
@@ -249,7 +249,7 @@ impl ManagerState {
             let _ = self.wd_reset_tx.send(elev_idx);
             return;
         }
-        if let Some(&floor) = self.positions.get(&elev_idx) {
+        if let Some(&Position { floor, obstruction: _obstruction }) = self.positions.get(&elev_idx) {
             println!("Kicking elev {} with work request", elev_idx);
             let pseudo_cb = CallButton { floor, call: CallType::Cab };
             let _ = self.want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
