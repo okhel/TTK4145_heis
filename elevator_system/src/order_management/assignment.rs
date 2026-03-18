@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use crate::networking::types::Position;
+use crate::types::Position;
 use crate::order_management::types::{NextOrderResult, Order};
 use crate::elevator::elevio::poll::{CallButton, CallType};
 use colored::Colorize;

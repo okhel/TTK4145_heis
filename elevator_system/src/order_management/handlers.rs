@@ -3,7 +3,8 @@ use colored::Colorize;
 
 use crate::{
     elevator::elevio::poll::{CallButton, CallType},
-    networking::types::{ElevatorState, Msg, Position},
+    types::{ElevatorState, Position},
+    networking::types::Msg,
 };
 
 use super::ManagerState;
@@ -17,7 +18,6 @@ impl ManagerState {
             Event::AckReceived(msg)                     => self.on_ack_received(msg),
             Event::QueueOrders { orders }               => self.on_queue_orders(orders),
             Event::AssignOrders { orders }              => self.on_assign_orders(orders),
-            Event::WantOrder { completed_order }        => self.on_want_order(completed_order),
             Event::CompleteOrder { order }              => self.on_complete_order(order),
             Event::ClearOrders { orders }               => self.on_clear_orders(orders),
             Event::StateUpdate { states }               => self.on_state_update(states),
@@ -77,7 +77,7 @@ impl ManagerState {
         }
     }
 
-    // Local message in master
+    // Request next order for an idle elevator
     fn on_want_order(&mut self, completed_order: Order) {
         if self.role == Role::Master && self.current_orders.get(&completed_order.elev_idx).is_none(){
             let pseudo_order = Order { cb: CallButton { floor: completed_order.cb.floor, call: CallType::Cab }, elev_idx: completed_order.elev_idx };
@@ -95,7 +95,7 @@ impl ManagerState {
                     if *current_order == Some(order.clone()) {
                         self.current_orders.remove(&order.elev_idx);
                         println!("{}", format!("Elev {} completed order: {}", order.elev_idx, order).blue().bold());
-                        let _ = self.idle_reset_tx.send(order.elev_idx);
+                        self.idle_wd.reset(order.elev_idx);
                     } else {
                         if let Some(order_to_queue) = current_order.clone() {
                             self.orders.push_back(order_to_queue);
@@ -137,9 +137,9 @@ impl ManagerState {
         if self.role == Role::Master {
             for elev_idx in states.iter().map(|s| s.id as usize) {
                 if self.current_orders.get(&elev_idx).is_none() {
-                    let Position { floor, obstruction: _obstruction } = *self.positions.get(&elev_idx).unwrap();
+                    let Position { floor, .. } = *self.positions.get(&elev_idx).unwrap();
                     let pseudo_cb = CallButton { floor, call: CallType::Cab };
-                    let _ = self.want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
+                    self.on_want_order(Order { cb: pseudo_cb, elev_idx });
                 }
             }
         }
@@ -149,27 +149,27 @@ impl ManagerState {
         if self.role == Role::Master {
             if let Some(Some(order)) = self.current_orders.remove(&elev_idx) {
                 println!("{}", format!("Order timed out, queued: {}", order).yellow().bold());
-                let _ = self.wd_remove_tx.send(elev_idx);
-                let _ = self.ack_complete_tx.send((0, Msg::RequestOrder { order: order.clone() }));
-                let _ = self.want_order_tx.send(order);
-                let _ = self.idle_reset_tx.send(elev_idx);
+                self.order_wd.remove(elev_idx);
+                self.on_ack_received(Msg::RequestOrder { order: order.clone() });
+                self.on_want_order(order);
+                self.idle_wd.reset(elev_idx);
             }
         }
     }
 
     fn on_idle_timeout(&mut self, elev_idx: usize) {
         if self.role == Role::Master {
-            if let Some(&Position { floor, obstruction: _obstruction }) = self.positions.get(&elev_idx) {
+            if let Some(&Position { floor, .. }) = self.positions.get(&elev_idx) {
                 if self.current_orders.get(&elev_idx).is_none() {
                     println!("{}", format!("Elev {} idle for 5 seconds, requesting work", elev_idx).yellow());
                     let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
-                    let _ = self.want_order_tx.send(order);
-                    let _ = self.idle_reset_tx.send(elev_idx);
+                    self.on_want_order(order);
+                    self.idle_wd.reset(elev_idx);
                 } else {
-                    let _ = self.idle_remove_tx.send(elev_idx);
+                    self.idle_wd.remove(elev_idx);
                 }
             } else {
-                let _ = self.idle_reset_tx.send(elev_idx);
+                self.idle_wd.reset(elev_idx);
             }
         }
     }
@@ -208,12 +208,12 @@ impl ManagerState {
             // Remove watchdog for disappeared elevators and re-queue orders
             for elev_idx in &lost {
                 println!("{}", format!("Elev {} lost, re-queuing orders", elev_idx).red().bold());
-                let _ = self.wd_remove_tx.send(*elev_idx);
-                let _ = self.idle_remove_tx.send(*elev_idx);
+                self.order_wd.remove(*elev_idx);
+                self.idle_wd.remove(*elev_idx);
                 self.positions.remove(elev_idx);
                 if let Some(Some(order)) = self.current_orders.remove(elev_idx) {
                     println!("{}", format!("Re-queuing order: {}", order).yellow().bold());
-                    let _ = self.ack_complete_tx.send((0, Msg::RequestOrder { order }));
+                    self.on_ack_received(Msg::RequestOrder { order });
                 }
             }
         }
@@ -230,10 +230,10 @@ impl ManagerState {
     // --- Helper methods ---
 
     fn send_order(&mut self, completed_order: Order, next_order: Option<Order>) {
-        let _ = self.wd_reset_tx.send(completed_order.elev_idx);
+        self.order_wd.reset(completed_order.elev_idx);
         if let Some(next) = next_order {
             self.update_current_orders(next.clone(), next.elev_idx);
-            let _ = self.idle_remove_tx.send(next.elev_idx);
+            self.idle_wd.remove(next.elev_idx);
             if next.elev_idx == self.local_idx {
                 let _ = self.call_assign_tx.send(next.cb.clone());
             } else {
@@ -243,27 +243,27 @@ impl ManagerState {
         }
     }
 
-    fn kickstart_idle_elevator(&self, elev_idx: usize) {
+    fn kickstart_idle_elevator(&mut self, elev_idx: usize) {
         if self.current_orders.get(&elev_idx).is_some() {
             println!("Elev {} already has work, resetting watchdog", elev_idx);
-            let _ = self.wd_reset_tx.send(elev_idx);
+            self.order_wd.reset(elev_idx);
             return;
         }
-        if let Some(&Position { floor, obstruction: _obstruction }) = self.positions.get(&elev_idx) {
+        if let Some(&Position { floor, .. }) = self.positions.get(&elev_idx) {
             println!("Kicking elev {} with work request", elev_idx);
             let pseudo_cb = CallButton { floor, call: CallType::Cab };
-            let _ = self.want_order_tx.send(Order { cb: pseudo_cb, elev_idx });
-            let _ = self.idle_reset_tx.send(elev_idx);
+            self.on_want_order(Order { cb: pseudo_cb, elev_idx });
+            self.idle_wd.reset(elev_idx);
         } else {
             println!("No floor reading for elev {}, waiting for state update to kickstart", elev_idx);
-            let _ = self.idle_reset_tx.send(elev_idx);
+            self.idle_wd.reset(elev_idx);
         }
     }
 
     fn update_current_orders(&mut self, order: Order, elev_idx: usize) {
         self.current_orders.insert(elev_idx, Some(order.clone()));
-        let _ = self.wd_reset_tx.send(elev_idx);
-        let _ = self.idle_remove_tx.send(elev_idx);
+        self.order_wd.reset(elev_idx);
+        self.idle_wd.remove(elev_idx);
     }
 
     fn clear_these_orders(&mut self, completed_orders: Vec<Order>) {

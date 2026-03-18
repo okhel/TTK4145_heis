@@ -1,5 +1,6 @@
 use crate::elevator::elevio::poll::CallButton;
-use crate::networking::types::{ElevatorState, Msg};
+use crate::types::ElevatorState;
+use crate::networking::types::Msg;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Order {
@@ -24,20 +25,17 @@ pub struct NextOrderResult {
     pub clear: Option<Order>,
 }
 
-pub const M: u8 = 3; // floors
-
 pub enum Event {
     StateUpdateAndShare { states: Vec<ElevatorState> },
     StateUpdate { states: Vec<ElevatorState> },
     AlivesUpdate { alive_elevs: Vec<u8> },
-    
+
     RequestOrder { order: Order },
-    WantOrder { completed_order: Order },
     QueueOrders { orders: Vec<Order> },
     AssignOrders { orders: Vec<Order> },
     CompleteOrder { order: Order },
     ClearOrders { orders: Vec<Order> },
-    
+
     AckReceived(Msg),
     OrderTimeout { elev_idx: usize },
     IdleTimeout { elev_idx: usize },

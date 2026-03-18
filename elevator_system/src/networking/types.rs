@@ -1,26 +1,6 @@
 use serde::{Deserialize, Serialize};
 use crate::order_management::types::Order;
-
-// constants
-
-pub const BASE_PORT: u16 = 20000;
-pub const NUM_ELEVATORS: u8 = 3;
-pub const NUM_FLOORS: u8 = 4;
-
-// core types
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct Position {
-    pub floor: u8,
-    pub obstruction: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct ElevatorState {
-    pub id: u8,
-    pub floor: u8,
-    pub obstruction: bool,
-}
+use crate::types::ElevatorState;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum Msg {
@@ -31,6 +11,6 @@ pub enum Msg {
     CompleteOrder { order: Order },
     ClearOrders { orders: Vec<Order> },
     StateUpdate { states: Vec<ElevatorState> },
-    
+
     Heartbeat,
 }

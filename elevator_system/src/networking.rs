@@ -15,7 +15,7 @@ use tokio::sync::{
     mpsc::UnboundedSender as UTx,
     Mutex,
 };
-use tokio::time::{Duration, Instant, interval};
+use tokio::time::{Duration, Instant};
 
 use crate::USER;
 use address::{bind, random_port_addr, local_addr, peer_msg_addr, peer_ping_addr};
@@ -55,15 +55,20 @@ fn spawn_send_task(
 }
 
 
+pub struct NetworkChannels {
+    pub inbox: URx<Msg>,
+    pub outbox: UTx<Msg>,
+    pub ping_tx: UTx<u8>,
+    pub alive_rx: BcRx<Vec<u8>>,
+    pub ack_complete_tx: UTx<(u32, Msg)>,
+}
+
 pub async fn network_runner(
     my_id: u8,
     remote_ids: Vec<u8>,
-    mut inbox: URx<Msg>,
-    outbox: UTx<Msg>,
-    ping_tx: UTx<u8>,
-    mut alive_rx: BcRx<Vec<u8>>,
-    ack_complete_tx: UTx<(u32, Msg)>,
+    ch: NetworkChannels,
 ) {
+    let NetworkChannels { mut inbox, outbox, ping_tx, mut alive_rx, ack_complete_tx } = ch;
     let recv_port = if USER == "MAC" { 21000 + my_id as u16 } else { 21000 };
     let recv_socket = bind(&local_addr(my_id, recv_port)).await;
     let ack_socket = bind(&random_port_addr(my_id)).await;

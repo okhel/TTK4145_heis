@@ -1,18 +1,23 @@
-mod elevator_control;
+mod motor;
+mod sensing;
 
 pub mod elevio;
 use elevio::elev::Elevio;
-use elevio::poll::CallButton as CallButton;
+use elevio::poll::CallButton;
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc};
 
 use std::{io::*, time::*, sync::{Arc, Mutex}};
 
-use crate::networking::types::Position;
+use crate::types::Position;
 
-
-pub const NUM_FLOORS: u8 = 4;
-pub const NUM_ELEVATORS: u8 = 3;
-
+pub struct ElevatorChannels {
+    pub call_request_tx: UTx<CallButton>,
+    pub call_assign_rx: URx<CallButton>,
+    pub update_state_tx: UTx<Position>,
+    pub call_complete_tx: UTx<CallButton>,
+    pub call_light_rx: URx<(CallButton, bool)>,
+    pub call_light_tx: UTx<(CallButton, bool)>,
+}
 
 pub struct Elevator {
     io: Elevio,
@@ -24,7 +29,7 @@ impl Elevator {
     async fn init(id: u8) -> Result<Elevator> {
 
         let elevator = Self {
-            io: Elevio::init(&format!("127.0.0.1:250{}",id), NUM_FLOORS)?,
+            io: Elevio::init(&format!("127.0.0.1:250{}",id), crate::types::NUM_FLOORS)?,
             obstruction_state: Mutex::new(false),
             last_floor: Mutex::new(None),
         };
@@ -33,7 +38,7 @@ impl Elevator {
     }
 }
 
-pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_assign_rx: URx<CallButton>, update_state_tx: UTx<Position>, call_complete_tx: UTx<CallButton>, call_light_assign_rx: URx<(CallButton, bool)>, call_light_assign_tx: UTx<(CallButton, bool)>) -> Result<()> {
+pub async fn elevator_runner(port: u8, ch: ElevatorChannels) -> Result<()> {
 
     // Initialize elevator
     let my_elev = Arc::new(Elevator::init(port).await?);
@@ -56,7 +61,7 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
         tokio::spawn(async move {
             elevio::poll::call_buttons(elevator, call_button_tx, poll_period).await;
         });}
-    
+
     let (obstruction_tx, obstruction_rx) = uc::<bool>();{
         let elevator = obstruction_elevio.clone();
         tokio::spawn(async move {
@@ -64,30 +69,29 @@ pub async fn elevator_runner(port: u8, call_request_tx: UTx<CallButton>, call_as
         });
     }
 
-    
     // Start tasks
-    let update_state_motor_tx = update_state_tx.clone();
+    let update_state_motor_tx = ch.update_state_tx.clone();
     let motor_control_task = tokio::spawn({
         let elev = Arc::clone(&my_elev);
         async move {
-            elev.motor_control(floor_sensor_rx, call_assign_rx, update_state_motor_tx, call_complete_tx, call_light_assign_tx).await;
+            elev.motor_control(floor_sensor_rx, ch.call_assign_rx, update_state_motor_tx, ch.call_complete_tx, ch.call_light_tx).await;
         }
     });
 
     let io_sensing_task = tokio::spawn({
         let elev = Arc::clone(&my_elev);
         async move {
-            elev.io_sensing(call_button_rx, obstruction_rx, call_request_tx, update_state_tx).await;
+            elev.io_sensing(call_button_rx, obstruction_rx, ch.call_request_tx, ch.update_state_tx).await;
         }
     });
 
     let io_light_task = tokio::spawn({
         let elev = Arc::clone(&my_elev);
         async move {
-            elev.set_lights(call_light_assign_rx).await;
+            elev.set_lights(ch.call_light_rx).await;
         }
     });
-    
+
     let _ = tokio::join!(motor_control_task, io_sensing_task, io_light_task);
     Ok(())
 

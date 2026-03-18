@@ -1,17 +1,17 @@
 use std::env;
 use std::{io, panic};
 
-use tokio::{sync::{mpsc::unbounded_channel as uc, broadcast as bc}};
+use tokio::sync::{mpsc::unbounded_channel as uc, broadcast as bc};
 
 use elevator::elevio::poll::CallButton;
 use networking::types::Msg;
-
-use crate::networking::types::Position;
+use types::Position;
 
 pub mod elevator;
 pub mod master_slave;
 pub mod networking;
 pub mod order_management;
+pub mod types;
 pub mod watchdog;
 
 pub const USER: &str = "LAB"; // "MAC" or "LAB"
@@ -32,39 +32,36 @@ async fn main() -> io::Result<()> {
 
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
-    //let restart_remote_ids = remote_ids.clone();
-    // println!("I'm {}", local_id);
-    
-    // Elevator channels (CallButton-based)
+
+    // Elevator <-> Order Manager channels
     let (call_request_tx, call_request_rx) = uc::<CallButton>();
     let (call_assign_tx, call_assign_rx) = uc::<CallButton>();
     let (update_state_tx, update_state_rx) = uc::<Position>();
     let (call_complete_tx, call_complete_rx) = uc::<CallButton>();
-    let (call_light_assign_tx, call_light_assign_rx) = uc::<(CallButton, bool)>();
-    let init_call_light_assign_tx = call_light_assign_tx.clone();
+    let (call_light_tx, call_light_rx) = uc::<(CallButton, bool)>();
+    let init_call_light_tx = call_light_tx.clone();
 
-
-    // Network channels
+    // Order Manager <-> Network channels
     let (network_inbox_tx, network_inbox_rx) = uc::<Msg>();
     let (network_outbox_tx, network_outbox_rx) = uc::<Msg>();
+    let (ack_complete_tx, ack_complete_rx) = uc::<(u32, Msg)>();
+
+    // Discovery channels
     let (ping_tx, ping_rx) = uc::<u8>();
-    let (net_ack_complete_tx, ack_complete_rx) = uc::<(u32, Msg)>();
-    let order_ack_complete_tx = net_ack_complete_tx.clone();
-
-
     let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(16);
     let mgmt_elevs_alive_rx = elevs_alive_tx.subscribe();
-    //let restart_elevs_alive_rx = elevs_alive_tx.subscribe();
 
     let elevator_task = tokio::spawn(async move {
         elevator::elevator_runner(
             local_id,
-            call_request_tx,
-            call_assign_rx,
-            update_state_tx,
-            call_complete_tx,
-            call_light_assign_rx,
-            init_call_light_assign_tx
+            elevator::ElevatorChannels {
+                call_request_tx,
+                call_assign_rx,
+                update_state_tx,
+                call_complete_tx,
+                call_light_rx,
+                call_light_tx: init_call_light_tx,
+            },
         )
         .await
     });
@@ -73,11 +70,13 @@ async fn main() -> io::Result<()> {
         networking::network_runner(
             local_id,
             remote_ids,
-            network_inbox_rx,
-            network_outbox_tx,
-            ping_tx,
-            net_elevs_alive_rx,
-            net_ack_complete_tx,
+            networking::NetworkChannels {
+                inbox: network_inbox_rx,
+                outbox: network_outbox_tx,
+                ping_tx,
+                alive_rx: net_elevs_alive_rx,
+                ack_complete_tx,
+            },
         )
         .await;
     });
@@ -85,16 +84,17 @@ async fn main() -> io::Result<()> {
     let order_task = tokio::spawn(async move {
         order_management::order_manager(
             local_id,
-            call_request_rx,
-            call_assign_tx,
-            update_state_rx,
-            call_complete_rx,
-            call_light_assign_tx,
-            network_inbox_tx,
-            network_outbox_rx,
-            ack_complete_rx,
-            order_ack_complete_tx,
-            mgmt_elevs_alive_rx
+            order_management::OrderManagerChannels {
+                call_request_rx,
+                call_assign_tx,
+                update_state_rx,
+                call_complete_rx,
+                call_light_tx,
+                net_send_tx: network_inbox_tx,
+                net_recv_rx: network_outbox_rx,
+                ack_complete_rx,
+                elevs_alive_rx: mgmt_elevs_alive_rx,
+            },
         )
         .await
     });
@@ -102,9 +102,6 @@ async fn main() -> io::Result<()> {
     let master_slave_task = tokio::spawn(async move {
         master_slave::store_online_elevators(local_id, elevs_alive_tx, ping_rx).await;
     });
-    // let restart_task = tokio::spawn(async move {
-    //     master_slave::restart_elevators(local_id, restart_remote_ids, restart_elevs_alive_rx).await;
-    // });
 
     let _ = tokio::join!(elevator_task, network_task, order_task, master_slave_task);
     Ok(())

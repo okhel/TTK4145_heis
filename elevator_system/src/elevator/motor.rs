@@ -1,6 +1,6 @@
-use crate::elevator::{Elevator, NUM_FLOORS, elevio};
+use crate::elevator::{Elevator, elevio};
 use crate::elevator::elevio::poll::{CallButton, CallType};
-use crate::networking::types::Position;
+use crate::types::{NUM_FLOORS, Position};
 use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 use tokio::time::{sleep, Duration};
 
@@ -8,8 +8,8 @@ impl Elevator {
 
     // Go to a floor, cannot be called if not at a floor
     pub async fn motor_control(&self, mut floor_sensor_rx: URx<Option<u8>>, mut call_assign_rx: URx<CallButton>, update_state_tx: UTx<Position>, call_complete_tx: UTx<CallButton>, call_light_assign_tx: UTx<(CallButton, bool)>) {
-        
-        // Turn off all lights before initilaizing them
+
+        // Turn off all lights before initializing them
         for i in 0..NUM_FLOORS {
             let _ = call_light_assign_tx.send((CallButton {floor: i, call: CallType::Cab}, false));
             let _ = call_light_assign_tx.send((CallButton {floor: i, call: CallType::HallDown}, false));
@@ -35,7 +35,7 @@ impl Elevator {
         };
 
         let _ = update_state_tx.send(Position { floor: self.last_floor.lock().unwrap().unwrap(), obstruction: *self.obstruction_state.lock().unwrap() });
-        
+
         let mut direction: Option<u8> = Some(elevio::elev::DIRN_STOP);
         let mut target_call: CallButton = CallButton { floor: 0, call: CallType::HallUp };
         let mut between_floors: bool = false;
@@ -43,7 +43,7 @@ impl Elevator {
         loop {
             tokio::select! {
                 biased;
-                
+
                 // Recieved new target floor
                 Some(call) = call_assign_rx.recv() => {
                     target_call = call;
@@ -59,13 +59,7 @@ impl Elevator {
                         // If there is no change in direction, and direction is stop, send order complete message
                         None => {
                             if direction == Some(elevio::elev::DIRN_STOP) {
-                                self.io.door_light(true);
-
-                                sleep(Duration::from_secs(3)).await;
-                                while *self.obstruction_state.lock().unwrap() {
-                                    sleep(Duration::from_millis(100)).await;
-                                }
-                                self.io.door_light(false);
+                                self.door_sequence().await;
                                 let _ = call_complete_tx.send(target_call.clone());
                             }
                         },
@@ -82,14 +76,7 @@ impl Elevator {
                         if floor == target_call.floor {
                             direction = Some(elevio::elev::DIRN_STOP);
                             self.io.motor_direction(elevio::elev::DIRN_STOP);
-                            self.io.door_light(true);
-
-                            sleep(Duration::from_secs(3)).await;
-                            while *self.obstruction_state.lock().unwrap() {
-                                sleep(Duration::from_millis(100)).await;
-                            }
-                            self.io.door_light(false);
-                            // println!("Sending order complete message for {:?}", target_call);
+                            self.door_sequence().await;
                             let _ = call_complete_tx.send(target_call.clone());
                         }
                     }
@@ -102,30 +89,13 @@ impl Elevator {
         }
     }
 
-    pub async fn io_sensing(&self, mut call_rx: URx<elevio::poll::CallButton>, mut obstruction_rx: URx<bool>, call_request_tx: UTx<CallButton>, update_state_tx: UTx<Position>) {
-        loop {
-            tokio::select! {
-                
-                Some(call) = call_rx.recv() => {
-                    let _ = call_request_tx.send(call);
-                }
-
-                Some(_) = obstruction_rx.recv() => {
-                    let mut obs = self.obstruction_state.lock().unwrap();
-                    *obs = !*obs;
-                    update_state_tx.send(Position { floor: self.last_floor.lock().unwrap().unwrap(), obstruction: *obs }).unwrap();
-                }
-
-            }
+    async fn door_sequence(&self) {
+        self.io.door_light(true);
+        sleep(Duration::from_secs(3)).await;
+        while *self.obstruction_state.lock().unwrap() {
+            sleep(Duration::from_millis(100)).await;
         }
-    }
-    
-    pub async fn set_lights(&self, mut call_light_assign_rx: URx<(CallButton, bool)>) {
-        loop {
-            if let Some((cb, on)) = call_light_assign_rx.recv().await {
-                self.io.call_button_light(cb.floor, cb.call.as_u8(), on);
-            }
-        }
+        self.io.door_light(false);
     }
 }
 
