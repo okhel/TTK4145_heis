@@ -5,7 +5,7 @@ use tokio::net::UdpSocket;
 
 const MAX_MSG_BYTES: usize = 65507;
 const ACK_TIMEOUT: Duration = Duration::from_millis(5);
-const MAX_RETRIES: u32 = 5;
+const MAX_RETRIES: u32 = 10000;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Frame {
