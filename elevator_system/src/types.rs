@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc};
+use tokio::sync::mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx};
 
 use crate::{elevator::elevio::poll::CallButton, networking::types::Msg};
 

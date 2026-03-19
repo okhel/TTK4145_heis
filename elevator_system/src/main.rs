@@ -14,7 +14,7 @@ pub mod watchdog;
 
 pub const USER: &str = "LAB"; // "MAC" or "LAB"
 
-fn on_panic(local_id: u8) {
+fn on_panic(_local_id: u8) {
     std::process::abort();
 }
 
