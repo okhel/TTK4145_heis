@@ -31,16 +31,18 @@ async fn main() -> io::Result<()> {
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
 
-    // Discovery channels (shared between networking, master_slave, and order_mgr)
+    // discovery channels 
     let (ping_tx, ping_rx) = uc::<u8>();
     let (alive_tx, net_alive_rx) = bc::channel::<Vec<u8>>(16);
     let mgmt_alive_rx = alive_tx.subscribe();
 
+    // channels for internal and external elevator communication
     let (event_tx, event_rx) = uc::<ElevatorEvent>();
     let (cmd_tx, cmd_rx) = uc::<ElevatorCommand>();
-
     let elev_internal = ElevatorInternal { event_tx, cmd_rx };
     let elev_handle = ElevatorHandle { event_rx, cmd_tx };
+
+    // channels for internal and external network communication
     let (net_send_tx, net_inbox) = uc::<networking::types::Msg>();
     let (net_event_tx, net_event_rx) = uc::<NetworkEvent>();
     let net_internal = NetworkInternal { inbox: net_inbox, event_tx: net_event_tx };
