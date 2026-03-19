@@ -1,4 +1,4 @@
-use crate::elevator::elevio::poll::CallButton;
+use crate::elevator::elevio::poll::{CallButton, CallType};
 use crate::types::ElevatorState;
 use crate::networking::types::Msg;
 
@@ -6,6 +6,12 @@ use crate::networking::types::Msg;
 pub struct Order {
     pub cb: CallButton,
     pub elev_idx: usize,
+}
+
+impl Order {
+    pub fn is_for(&self, elev_idx: usize) -> bool {
+        self.elev_idx == elev_idx || self.cb.call != CallType::Cab
+    }
 }
 
 impl std::fmt::Display for Order {
@@ -39,4 +45,21 @@ pub enum Event {
     AckReceived(Msg),
     OrderTimeout { elev_idx: usize },
     IdleTimeout { elev_idx: usize },
+}
+
+impl Event {
+    pub fn from_msg(msg: Msg, role: &Role) -> Option<Self> {
+        match msg {
+            Msg::RequestOrder { order } => if role == &Role::Master { Some(Self::RequestOrder { order }) } else { Some(Self::QueueOrders { orders: vec![order] }) },
+            Msg::QueueOrders { orders }  => Some(Self::QueueOrders { orders }),
+            Msg::AssignOrders { orders } => Some(Self::AssignOrders { orders }),
+            Msg::CompleteOrder { order } => Some(Self::CompleteOrder { order }),
+            Msg::ClearOrders { orders }  => Some(Self::ClearOrders { orders }),
+            Msg::StateUpdate { states }  => match role {
+                Role::Master => Some(Self::StateUpdateAndShare { states }),
+                Role::Slave  => Some(Self::StateUpdate { states }),
+            },
+            Msg::Heartbeat => None,
+        }
+    }
 }

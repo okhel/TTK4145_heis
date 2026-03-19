@@ -24,7 +24,7 @@ use pending::{remove_dead_elevators, resolve_peer, PendingMap};
 use transport::{recv_reliable, send_reliable};
 use types::Msg;
 
-const MAX_APP_RETRIES: u32 = 20;
+const MAX_APP_RETRIES: u32 = 10000;
 const DEDUP_WINDOW: Duration = Duration::from_secs(3);
 
 struct SendCtx {

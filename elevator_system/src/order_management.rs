@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use colored::Colorize;
 use tokio::sync::{
     mpsc::{UnboundedSender as UTx, unbounded_channel as uc},
@@ -7,45 +7,31 @@ use tokio::sync::{
 use tokio::time::Duration;
 
 use crate::{
-    types::{ElevatorState, Position, ElevatorCommand, ElevatorEvent, ElevatorHandle, NetworkEvent, NetworkHandle},
-    networking::{types::Msg},
+    types::{Position, ElevatorCommand, ElevatorEvent, ElevatorHandle, NetworkEvent, NetworkHandle},
+    networking::types::Msg,
     watchdog::WatchdogHandle,
 };
 
-use types::{Event, Order, Role};
+use types::{Event, Order};
+use order_list::OrderList;
+use membership::ClusterState;
+
 pub mod types;
-pub mod assignment;
+mod assignment;
+mod order_list;
+mod membership;
+mod master_order_operations;
 
-
-fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
-    match msg {
-        Msg::RequestOrder { order }                  => if role == &Role::Master { Some(Event::RequestOrder { order }) } else { Some(Event::QueueOrders { orders: vec![order] }) },
-        Msg::QueueOrders { orders }             => Some(Event::QueueOrders { orders }),
-        Msg::AssignOrders { orders }                   => Some(Event::AssignOrders { orders }),
-        Msg::CompleteOrder { order }                 => Some(Event::CompleteOrder { order }),
-        Msg::ClearOrders { orders }             => Some(Event::ClearOrders { orders }),
-        Msg::StateUpdate { states }     => match role {
-            Role::Master    => Some(Event::StateUpdateAndShare { states }),
-            Role::Slave     => Some(Event::StateUpdate { states }),
-        },
-        Msg::Heartbeat                   => None,
-    }
-}
-
-pub(crate) struct ManagerState {
-    pub orders: VecDeque<Order>,
-    pub positions: HashMap<usize, Position>,
-    pub current_orders: HashMap<usize, Option<Order>>,
-    pub alive_elevs: HashSet<usize>,
-    pub pending_acks: HashMap<Order, Order>,
-    pub role: Role,
-    pub network_ready: bool,
-    pub local_id: u8,
-    pub local_idx: usize,
-    pub elev_cmd_tx: UTx<ElevatorCommand>,
-    pub network_tx: UTx<Msg>,
-    pub order_wd: WatchdogHandle,
-    pub idle_wd: WatchdogHandle,
+struct ManagerState {
+    order_list: OrderList,
+    cluster: ClusterState,
+    positions: HashMap<usize, Position>,
+    local_id: u8,
+    local_idx: usize,
+    elev_cmd_tx: UTx<ElevatorCommand>,
+    network_tx: UTx<Msg>,
+    order_wd: WatchdogHandle,
+    idle_wd: WatchdogHandle,
 }
 
 mod handlers;
@@ -65,13 +51,9 @@ pub async fn order_manager(
     let idle_wd = WatchdogHandle::spawn(Duration::from_secs(3), idle_expired_tx);
 
     let mut state = ManagerState {
-        orders: VecDeque::with_capacity(9),
+        order_list: OrderList::new(),
+        cluster: ClusterState::new(),
         positions: HashMap::new(),
-        current_orders: HashMap::new(),
-        alive_elevs: HashSet::new(),
-        pending_acks: HashMap::new(),
-        role: Role::Slave,
-        network_ready: false,
         local_id,
         local_idx,
         elev_cmd_tx: elev.cmd_tx,
@@ -95,13 +77,13 @@ pub async fn order_manager(
             // Elevator events
             Some(elev_event) = elev.event_rx.recv() => match elev_event {
                 ElevatorEvent::ButtonPress(cb) => Event::RequestOrder { order: Order { cb, elev_idx: local_idx } },
-                ElevatorEvent::StateUpdate(pos) => Event::StateUpdateAndShare { states: vec![ElevatorState { id: local_id, floor: pos.floor, obstruction: pos.obstruction }] },
+                ElevatorEvent::StateUpdate(pos) => Event::StateUpdateAndShare { states: vec![crate::types::ElevatorState { id: local_id, floor: pos.floor, obstruction: pos.obstruction }] },
                 ElevatorEvent::OrderComplete(cb) => Event::CompleteOrder { order: Order { cb, elev_idx: local_id as usize } },
             },
 
             // Network events
             Some(net_event) = net.event_rx.recv() => match net_event {
-                NetworkEvent::Message(msg) => match msg_to_event(msg, &state.role) {
+                NetworkEvent::Message(msg) => match Event::from_msg(msg, state.cluster.role()) {
                     Some(e) => e,
                     None => continue,
                 },
