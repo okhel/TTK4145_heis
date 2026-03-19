@@ -2,9 +2,7 @@ use std::collections::HashSet;
 use colored::Colorize;
 
 use crate::{
-    elevator::elevio::poll::{CallButton, CallType},
-    types::{ElevatorState, Position},
-    networking::types::Msg,
+    elevator::elevio::poll::{CallButton, CallType}, networking::types::Msg, types::{ElevatorCommand, ElevatorState, Position}
 };
 
 use super::ManagerState;
@@ -40,7 +38,7 @@ impl ManagerState {
                 let _ = self.network_tx.send(Msg::QueueOrders { orders: vec![order.clone()] });
                 self.pending_acks.remove(&order);
                 if is_mine(&order, self.local_idx) {
-                    let _ = self.call_light_tx.send((order.cb.clone(), true));
+                    let _ = self.elev_cmd_tx.send(ElevatorCommand::SetLight(order.cb.clone(), true));
                 }
 
                 if let Some(order_elev_idx) = self.try_assign_new_order(order.clone()) {
@@ -62,7 +60,7 @@ impl ManagerState {
                 self.orders.push_back(order.clone());
             }
             if is_mine(&order, self.local_idx) {
-                let _ = self.call_light_tx.send((order.cb, true));
+                let _ = self.elev_cmd_tx.send(ElevatorCommand::SetLight(order.cb, true));
             }
         }
     }
@@ -72,7 +70,7 @@ impl ManagerState {
         for order in orders {
             if order.elev_idx == self.local_idx {
                 println!("Received order: {} assigned to me", order);
-                let _ = self.call_assign_tx.send(order.cb.clone());
+                let _ = self.elev_cmd_tx.send(ElevatorCommand::AssignOrder(order.cb.clone()));
             }
         }
     }
@@ -235,7 +233,7 @@ impl ManagerState {
             self.update_current_orders(next.clone(), next.elev_idx);
             self.idle_wd.remove(next.elev_idx);
             if next.elev_idx == self.local_idx {
-                let _ = self.call_assign_tx.send(next.cb.clone());
+                let _ = self.elev_cmd_tx.send(ElevatorCommand::AssignOrder(next.cb.clone()));
             } else {
                 let _ = self.network_tx.send(Msg::AssignOrders { orders: vec![next.clone()] });
             }
@@ -274,7 +272,7 @@ impl ManagerState {
                 self.orders.retain(|o| o.cb != order.cb);
             }
             if is_mine(&order, self.local_idx) {
-                let _ = self.call_light_tx.send((order.cb, false));
+                let _ = self.elev_cmd_tx.send(ElevatorCommand::SetLight(order.cb, false));
             }
         }
     }

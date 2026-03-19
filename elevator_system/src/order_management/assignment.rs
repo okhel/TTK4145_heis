@@ -161,17 +161,10 @@ fn designate_busy_idle(
     positions: &HashMap<usize, Position>,
 ) -> (Vec<usize>, Vec<usize>) {
     let busy: Vec<usize> = alive_elevs.iter().copied()
-        .filter(|&i| {
-            current_orders.get(&i).and_then(|o| o.as_ref()).is_some()
-                && positions.get(&i).map_or(false, |p| !p.obstruction)
-        })
+        .filter(|&i| current_orders.get(&i).and_then(|o| o.as_ref()).is_some() && Some(positions.get(&i).map_or(false, |p| p.obstruction)) == Some(false))
         .collect();
     let idle: Vec<usize> = alive_elevs.iter().copied()
-        .filter(|&i| {
-            !busy.contains(&i)
-                && is_mine(&order, i)
-                && positions.get(&i).map_or(false, |p| !p.obstruction)
-        })
+        .filter(|&i| !busy.contains(&i) && is_mine(&order, i) && Some(positions.get(&i).map_or(false, |p| p.obstruction)) == Some(false))
         .collect();
     (busy, idle)
 }

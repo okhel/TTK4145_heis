@@ -14,6 +14,7 @@ pub async fn resolve_peer(
     peer: u8,
 ) -> Option<Msg> {
     let mut map = pending.lock().await;
+    
     let all_done = map
         .get_mut(&seq)
         .map(|(remaining, _)| {

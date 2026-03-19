@@ -11,13 +11,13 @@ use std::sync::Arc;
 use tokio::sync::{
     broadcast::Receiver as BcRx,
     mpsc::unbounded_channel as uc,
-    mpsc::UnboundedReceiver as URx,
     mpsc::UnboundedSender as UTx,
     Mutex,
 };
 use tokio::time::{Duration, Instant};
 
 use crate::USER;
+use crate::types::{NetworkEvent, NetworkInternal};
 use address::{bind, random_port_addr, local_addr, peer_msg_addr, peer_ping_addr};
 use heartbeat::heartbeat_runner;
 use pending::{remove_dead_elevators, resolve_peer, PendingMap};
@@ -55,20 +55,14 @@ fn spawn_send_task(
 }
 
 
-pub struct NetworkChannels {
-    pub inbox: URx<Msg>,
-    pub outbox: UTx<Msg>,
-    pub ping_tx: UTx<u8>,
-    pub alive_rx: BcRx<Vec<u8>>,
-    pub ack_complete_tx: UTx<(u32, Msg)>,
-}
-
 pub async fn network_runner(
     my_id: u8,
     remote_ids: Vec<u8>,
-    ch: NetworkChannels,
+    internal: NetworkInternal,
+    ping_tx: UTx<u8>,
+    mut alive_rx: BcRx<Vec<u8>>,
 ) {
-    let NetworkChannels { mut inbox, outbox, ping_tx, mut alive_rx, ack_complete_tx } = ch;
+    let NetworkInternal { mut inbox, event_tx } = internal;
     let recv_port = if USER == "MAC" { 21000 + my_id as u16 } else { 21000 };
     let recv_socket = bind(&local_addr(my_id, recv_port)).await;
     let ack_socket = bind(&random_port_addr(my_id)).await;
@@ -117,8 +111,8 @@ pub async fn network_runner(
                 peer_ids = alive.iter().filter(|&&id| id != my_id).copied().collect();
                 peer_addrs = peer_ids.iter().map(|&id| (id, peer_msg_addr(id))).collect();
 
-                for (seq, msg) in remove_dead_elevators(&pending, &alive_set).await {
-                    let _ = ack_complete_tx.send((seq, msg));
+                for (_seq, msg) in remove_dead_elevators(&pending, &alive_set).await {
+                    let _ = event_tx.send(NetworkEvent::AckComplete(msg));
                 }
             }
 
@@ -131,7 +125,7 @@ pub async fn network_runner(
                 };
 
                 if targets.is_empty() {
-                    let _ = ack_complete_tx.send((seq, msg));
+                    let _ = event_tx.send(NetworkEvent::AckComplete(msg));
                 } else {
                     let expected: HashSet<u8> = targets.iter().copied().collect();
                     pending.lock().await.insert(seq, (expected, msg.clone()));
@@ -147,14 +141,14 @@ pub async fn network_runner(
             // ack received
             Some((ack_seq, peer)) = ack_rx.recv() => {
                 if let Some(msg) = resolve_peer(&pending, ack_seq, peer).await {
-                    let _ = ack_complete_tx.send((ack_seq, msg));
+                    let _ = event_tx.send(NetworkEvent::AckComplete(msg));
                 }
             }
 
             // send failure/retry
             Some((fail_seq, peer, msg, addr, retry)) = fail_rx.recv() => {
                 handle_send_failure(
-                    &send_ctx, &pending, &ack_complete_tx,
+                    &send_ctx, &pending, &event_tx,
                     &peer_addrs, &peer_ids,
                     is_master, master_id,
                     fail_seq, peer, msg, addr, retry,
@@ -167,7 +161,7 @@ pub async fn network_runner(
                 seen.retain(|_, t| now.duration_since(*t) < DEDUP_WINDOW);
 
                 if seen.insert((msg_seq, sender), now).is_none() {
-                    let _ = outbox.send(msg);
+                    let _ = event_tx.send(NetworkEvent::Message(msg));
                 }
             }
         }
@@ -179,7 +173,7 @@ pub async fn network_runner(
 async fn handle_send_failure(
     ctx: &SendCtx,
     pending: &PendingMap,
-    ack_complete_tx: &UTx<(u32, Msg)>,
+    event_tx: &UTx<NetworkEvent>,
     peer_addrs: &HashMap<u8, SocketAddr>,
     peer_ids: &[u8],
     is_master: bool,
@@ -215,6 +209,6 @@ async fn handle_send_failure(
     // give up
     eprintln!("Permanent send failure seq={seq} to peer {failed_peer} after {retry} retries");
     if let Some(msg) = resolve_peer(pending, seq, failed_peer).await {
-        let _ = ack_complete_tx.send((seq, msg));
+        let _ = event_tx.send(NetworkEvent::AckComplete(msg));
     }
 }

@@ -3,9 +3,7 @@ use std::{io, panic};
 
 use tokio::sync::{mpsc::unbounded_channel as uc, broadcast as bc};
 
-use elevator::elevio::poll::CallButton;
-use networking::types::Msg;
-use types::Position;
+use crate::types::{ElevatorCommand, ElevatorEvent, ElevatorHandle, ElevatorInternal, NetworkEvent, NetworkHandle, NetworkInternal};
 
 pub mod elevator;
 pub mod master_slave;
@@ -33,74 +31,35 @@ async fn main() -> io::Result<()> {
     ids.retain(|x| *x != local_id);
     let remote_ids = ids;
 
-    // Elevator <-> Order Manager channels
-    let (call_request_tx, call_request_rx) = uc::<CallButton>();
-    let (call_assign_tx, call_assign_rx) = uc::<CallButton>();
-    let (update_state_tx, update_state_rx) = uc::<Position>();
-    let (call_complete_tx, call_complete_rx) = uc::<CallButton>();
-    let (call_light_tx, call_light_rx) = uc::<(CallButton, bool)>();
-    let init_call_light_tx = call_light_tx.clone();
-
-    // Order Manager <-> Network channels
-    let (network_inbox_tx, network_inbox_rx) = uc::<Msg>();
-    let (network_outbox_tx, network_outbox_rx) = uc::<Msg>();
-    let (ack_complete_tx, ack_complete_rx) = uc::<(u32, Msg)>();
-
-    // Discovery channels
+    // Discovery channels (shared between networking, master_slave, and order_mgr)
     let (ping_tx, ping_rx) = uc::<u8>();
-    let (elevs_alive_tx, net_elevs_alive_rx) = bc::channel::<Vec<u8>>(16);
-    let mgmt_elevs_alive_rx = elevs_alive_tx.subscribe();
+    let (alive_tx, net_alive_rx) = bc::channel::<Vec<u8>>(16);
+    let mgmt_alive_rx = alive_tx.subscribe();
+
+    let (event_tx, event_rx) = uc::<ElevatorEvent>();
+    let (cmd_tx, cmd_rx) = uc::<ElevatorCommand>();
+
+    let elev_internal = ElevatorInternal { event_tx, cmd_rx };
+    let elev_handle = ElevatorHandle { event_rx, cmd_tx };
+    let (net_send_tx, net_inbox) = uc::<networking::types::Msg>();
+    let (net_event_tx, net_event_rx) = uc::<NetworkEvent>();
+    let net_internal = NetworkInternal { inbox: net_inbox, event_tx: net_event_tx };
+    let net_handle = NetworkHandle { send_tx: net_send_tx, event_rx: net_event_rx };
 
     let elevator_task = tokio::spawn(async move {
-        elevator::elevator_runner(
-            local_id,
-            elevator::ElevatorChannels {
-                call_request_tx,
-                call_assign_rx,
-                update_state_tx,
-                call_complete_tx,
-                call_light_rx,
-                call_light_tx: init_call_light_tx,
-            },
-        )
-        .await
+        elevator::elevator_runner(local_id, elev_internal).await
     });
 
     let network_task = tokio::spawn(async move {
-        networking::network_runner(
-            local_id,
-            remote_ids,
-            networking::NetworkChannels {
-                inbox: network_inbox_rx,
-                outbox: network_outbox_tx,
-                ping_tx,
-                alive_rx: net_elevs_alive_rx,
-                ack_complete_tx,
-            },
-        )
-        .await;
+        networking::network_runner(local_id, remote_ids, net_internal, ping_tx, net_alive_rx).await;
     });
 
     let order_task = tokio::spawn(async move {
-        order_management::order_manager(
-            local_id,
-            order_management::OrderManagerChannels {
-                call_request_rx,
-                call_assign_tx,
-                update_state_rx,
-                call_complete_rx,
-                call_light_tx,
-                net_send_tx: network_inbox_tx,
-                net_recv_rx: network_outbox_rx,
-                ack_complete_rx,
-                elevs_alive_rx: mgmt_elevs_alive_rx,
-            },
-        )
-        .await
+        order_management::order_manager(local_id, elev_handle, net_handle, mgmt_alive_rx).await
     });
 
     let master_slave_task = tokio::spawn(async move {
-        master_slave::store_online_elevators(local_id, elevs_alive_tx, ping_rx).await;
+        master_slave::store_online_elevators(local_id, alive_tx, ping_rx).await;
     });
 
     let _ = tokio::join!(elevator_task, network_task, order_task, master_slave_task);

@@ -1,15 +1,14 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use colored::Colorize;
 use tokio::sync::{
-    mpsc::{UnboundedReceiver as URx, UnboundedSender as UTx, unbounded_channel as uc},
+    mpsc::{UnboundedSender as UTx, unbounded_channel as uc},
     broadcast::Receiver as BcRx,
 };
 use tokio::time::Duration;
 
 use crate::{
-    elevator::elevio::poll::CallButton,
-    types::{ElevatorState, Position},
-    networking::types::Msg,
+    types::{ElevatorState, Position, ElevatorCommand, ElevatorEvent, ElevatorHandle, NetworkEvent, NetworkHandle},
+    networking::{types::Msg},
     watchdog::WatchdogHandle,
 };
 
@@ -33,18 +32,6 @@ fn msg_to_event(msg: Msg, role: &Role) -> Option<Event> {
     }
 }
 
-pub struct OrderManagerChannels {
-    pub call_request_rx: URx<CallButton>,
-    pub call_assign_tx: UTx<CallButton>,
-    pub update_state_rx: URx<Position>,
-    pub call_complete_rx: URx<CallButton>,
-    pub call_light_tx: UTx<(CallButton, bool)>,
-    pub net_send_tx: UTx<Msg>,
-    pub net_recv_rx: URx<Msg>,
-    pub ack_complete_rx: URx<(u32, Msg)>,
-    pub elevs_alive_rx: BcRx<Vec<u8>>,
-}
-
 pub(crate) struct ManagerState {
     pub orders: VecDeque<Order>,
     pub positions: HashMap<usize, Position>,
@@ -55,8 +42,7 @@ pub(crate) struct ManagerState {
     pub network_ready: bool,
     pub local_id: u8,
     pub local_idx: usize,
-    pub call_assign_tx: UTx<CallButton>,
-    pub call_light_tx: UTx<(CallButton, bool)>,
+    pub elev_cmd_tx: UTx<ElevatorCommand>,
     pub network_tx: UTx<Msg>,
     pub order_wd: WatchdogHandle,
     pub idle_wd: WatchdogHandle,
@@ -66,7 +52,9 @@ mod handlers;
 
 pub async fn order_manager(
     local_id: u8,
-    mut ch: OrderManagerChannels,
+    mut elev: ElevatorHandle,
+    mut net: NetworkHandle,
+    mut alive_rx: BcRx<Vec<u8>>,
 ) {
     let local_idx = local_id as usize;
 
@@ -86,44 +74,56 @@ pub async fn order_manager(
         network_ready: false,
         local_id,
         local_idx,
-        call_assign_tx: ch.call_assign_tx,
-        call_light_tx: ch.call_light_tx,
-        network_tx: ch.net_send_tx,
+        elev_cmd_tx: elev.cmd_tx,
+        network_tx: net.send_tx,
         order_wd,
         idle_wd,
     };
 
     // Wait for initial floor reading, this signifies that the elevator is ready to receive orders
-    let Position { floor: init_floor, obstruction: init_obstruction } = ch.update_state_rx.recv().await.unwrap();
-    state.positions.insert(local_idx, Position { floor: init_floor, obstruction: init_obstruction });
-    println!("{}", format!("Elev {} ready at floor {}", local_idx, init_floor).green().bold());
+    loop {
+        if let Some(ElevatorEvent::StateUpdate(pos)) = elev.event_rx.recv().await {
+            state.positions.insert(local_idx, pos);
+            println!("{}", format!("Elev {} ready at floor {}", local_idx, pos.floor).green().bold());
+            break;
+        }
+    }
 
     loop {
         let event = tokio::select! {
 
-            // Local messages
-            Some(cb)            = ch.call_request_rx.recv()                    => Event::RequestOrder { order: Order { cb, elev_idx: local_idx } },
-            Some(Position { floor, obstruction }) = ch.update_state_rx.recv()  => Event::StateUpdateAndShare { states: vec![ElevatorState {id: local_id, floor, obstruction}] },
-            Some(cb)            = ch.call_complete_rx.recv()                   => Event::CompleteOrder { order: Order { cb, elev_idx: local_id as usize } },
-            result              = ch.elevs_alive_rx.recv()                     => match result {
+            // Elevator events
+            Some(elev_event) = elev.event_rx.recv() => match elev_event {
+                ElevatorEvent::ButtonPress(cb) => Event::RequestOrder { order: Order { cb, elev_idx: local_idx } },
+                ElevatorEvent::StateUpdate(pos) => Event::StateUpdateAndShare { states: vec![ElevatorState { id: local_id, floor: pos.floor, obstruction: pos.obstruction }] },
+                ElevatorEvent::OrderComplete(cb) => Event::CompleteOrder { order: Order { cb, elev_idx: local_id as usize } },
+            },
+
+            // Network events
+            Some(net_event) = net.event_rx.recv() => match net_event {
+                NetworkEvent::Message(msg) => match msg_to_event(msg, &state.role) {
+                    Some(e) => e,
+                    None => continue,
+                },
+                NetworkEvent::AckComplete(msg) => Event::AckReceived(msg),
+            },
+
+            // Discovery
+            result = alive_rx.recv() => match result {
                 Ok(alive_elevs) => Event::AlivesUpdate { alive_elevs },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    match ch.elevs_alive_rx.recv().await {
+                    match alive_rx.recv().await {
                         Ok(alive_elevs) => Event::AlivesUpdate { alive_elevs },
                         _ => continue,
                     }
                 }
                 Err(_) => continue,
             },
-            Some((_seq, msg))   = ch.ack_complete_rx.recv()                    => Event::AckReceived(msg),
-            Some(elev_idx)      = wd_expired_rx.recv()                         => Event::OrderTimeout { elev_idx },
-            Some(elev_idx)      = idle_expired_rx.recv()                       => Event::IdleTimeout { elev_idx },
 
-            // Network messages
-            Some(msg)           = ch.net_recv_rx.recv()                        => match msg_to_event(msg, &state.role) {
-                Some(e) => e,
-                None    => continue,
-            },
+            // Watchdogs
+            Some(elev_idx) = wd_expired_rx.recv()   => Event::OrderTimeout { elev_idx },
+            Some(elev_idx) = idle_expired_rx.recv()  => Event::IdleTimeout { elev_idx },
+
             else => panic!("All channels closed"),
         };
 
