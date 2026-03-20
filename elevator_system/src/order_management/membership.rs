@@ -7,13 +7,13 @@ pub struct MembershipChange {
     pub became_master: bool,
 }
 
-pub struct ClusterState {
+pub struct MembershipState {
     alive_elevs: HashSet<usize>,
     role: Role,
     network_ready: bool,
 }
 
-impl ClusterState {
+impl MembershipState {
     pub fn new() -> Self {
         Self {
             alive_elevs: HashSet::new(),

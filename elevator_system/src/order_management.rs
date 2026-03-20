@@ -14,7 +14,7 @@ use crate::{
 
 use types::{Event, Order};
 use order_list::OrderList;
-use membership::ClusterState;
+use membership::MembershipState;
 
 pub mod types;
 mod assignment;
@@ -24,7 +24,7 @@ mod master_order_operations;
 
 struct ManagerState {
     order_list: OrderList,
-    cluster: ClusterState,
+    membership: MembershipState,
     positions: HashMap<usize, Position>,
     local_id: u8,
     local_idx: usize,
@@ -52,7 +52,7 @@ pub async fn order_manager(
 
     let mut state = ManagerState {
         order_list: OrderList::new(),
-        cluster: ClusterState::new(),
+        membership: MembershipState::new(),
         positions: HashMap::new(),
         local_id,
         local_idx,
@@ -83,7 +83,7 @@ pub async fn order_manager(
 
             // Network events
             Some(net_event) = net.event_rx.recv() => match net_event {
-                NetworkEvent::Message(msg) => match Event::from_msg(msg, state.cluster.role()) {
+                NetworkEvent::Message(msg) => match Event::from_msg(msg, state.membership.role()) {
                     Some(e) => e,
                     None => continue,
                 },

@@ -32,7 +32,7 @@ impl ManagerState {
     // Master received acks from all on order request
     pub(super) fn on_ack_received(&mut self, msg: Msg) {
         if let Msg::RequestOrder { order } = msg
-            && self.cluster.is_master()
+            && self.membership.is_master()
         {
             let _ = self.network_tx.send(Msg::QueueOrders { orders: vec![order.clone()] });
             if order.is_for(self.local_idx) {
@@ -47,7 +47,7 @@ impl ManagerState {
 
     // Slaves should queue the order and turn on the light
     fn on_queue_orders(&mut self, orders: Vec<Order>) {
-        if self.cluster.is_master() {
+        if self.membership.is_master() {
             let _ = self.network_tx.send(Msg::QueueOrders { orders: orders.clone() });
         }
         for order in orders {
@@ -70,7 +70,7 @@ impl ManagerState {
 
     // Master received a complete order message, assigns next order for the elevator
     fn on_complete_order(&mut self, order: Order) {
-        match self.cluster.role() {
+        match self.membership.role() {
             Role::Slave => { let _ = self.network_tx.send(Msg::CompleteOrder { order }); }
             Role::Master => {
                 if let Some(current) = self.order_list.current_order(order.elev_idx).cloned() {
@@ -111,10 +111,10 @@ impl ManagerState {
         for new_state in &states {
             self.positions.insert(new_state.id as usize, Position { floor: new_state.floor, obstruction: new_state.obstruction });
         }
-        if self.cluster.is_network_ready() {
+        if self.membership.is_network_ready() {
             let _ = self.network_tx.send(Msg::StateUpdate { states: states.clone() });
         }
-        if self.cluster.is_master() {
+        if self.membership.is_master() {
             for elev_idx in states.iter().map(|s| s.id as usize) {
                 if !self.order_list.has_assignment(elev_idx) {
                     let Position { floor, .. } = *self.positions.get(&elev_idx).unwrap();
@@ -126,7 +126,7 @@ impl ManagerState {
     }
 
     fn on_order_timeout(&mut self, elev_idx: usize) {
-        if self.cluster.is_master()
+        if self.membership.is_master()
             && let Some(order) = self.order_list.unassign(elev_idx)
         {
             println!("{}", format!("Order timed out, queued: {}", order).yellow().bold());
@@ -138,7 +138,7 @@ impl ManagerState {
     }
 
     fn on_idle_timeout(&mut self, elev_idx: usize) {
-        if self.cluster.is_master() {
+        if self.membership.is_master() {
             if let Some(&Position { floor, .. }) = self.positions.get(&elev_idx) {
                 if !self.order_list.has_assignment(elev_idx) {
                     let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
@@ -154,7 +154,7 @@ impl ManagerState {
     }
 
     fn on_alives_update(&mut self, alive_elevs: Vec<u8>) {
-        let change = self.cluster.update_membership(&alive_elevs, self.local_id);
+        let change = self.membership.update_membership(&alive_elevs, self.local_id);
         self.handle_membership_change(change);
     }
 }

@@ -13,7 +13,7 @@ use super::assignment::{assign_new_order, assign_next_order};
 impl ManagerState {
     // Request next order for an idle elevator
     pub(super) fn want_order(&mut self, completed_order: Order) {
-        if self.cluster.is_master() && !self.order_list.has_assignment(completed_order.elev_idx) {
+        if self.membership.is_master() && !self.order_list.has_assignment(completed_order.elev_idx) {
             let pseudo_order = Order { cb: CallButton { floor: completed_order.cb.floor, call: CallType::Cab }, elev_idx: completed_order.elev_idx };
             let (next_order, _) = self.try_assign_next_order(pseudo_order.clone());
             self.send_order(completed_order.clone(), next_order);
@@ -76,14 +76,14 @@ impl ManagerState {
             order,
             &mut self.order_list,
             &self.positions,
-            &self.cluster.alive_vec(),
+            &self.membership.alive_vec(),
         )
     }
 
     pub(super) fn handle_membership_change(&mut self, change: MembershipChange) {
-        if self.cluster.is_master() {
+        if self.membership.is_master() {
             if change.became_master {
-                let alive: Vec<usize> = self.cluster.alive().iter().copied().collect();
+                let alive: Vec<usize> = self.membership.alive().iter().copied().collect();
                 for elev_idx in alive {
                     self.kickstart_idle_elevator(elev_idx);
                 }
