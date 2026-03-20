@@ -22,10 +22,11 @@ impl OrderList {
     }
 
     pub fn contains(&self, order: &Order) -> bool {
+        let all = self.queue.iter().chain(self.current_orders.values());
         if order.cb.call == CallType::Cab {
-            self.queue.iter().any(|o| o == order)
+            all.into_iter().any(|o| o == order)
         } else {
-            self.queue.iter().any(|o| o.cb == order.cb)
+            all.into_iter().any(|o| o.cb == order.cb)
         }
     }
 
