@@ -12,7 +12,7 @@ pub mod order_management;
 pub mod types;
 pub mod watchdog;
 
-pub const USER: &str = "MAC"; // "MAC" or "LAB"
+pub const USER: &str = "LAB"; // "MAC" or "LAB"
 
 fn on_panic(_local_id: u8, info: &panic::PanicHookInfo) {
       eprintln!("{}", info);
