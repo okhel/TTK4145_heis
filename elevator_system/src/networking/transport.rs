@@ -8,7 +8,7 @@ const ACK_TIMEOUT: Duration = Duration::from_millis(5);
 const MAX_RETRIES: u32 = 5;
 
 #[derive(Serialize, Deserialize, Debug)]
-pub enum Frame {
+enum Frame {
     Data { seq: u32, msg: Msg },
     Ack { seq: u32, msg: Msg },
 }
