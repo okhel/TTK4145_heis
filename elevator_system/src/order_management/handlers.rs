@@ -41,8 +41,6 @@ impl ManagerState {
 
             if let Some(order_elev_idx) = self.try_assign_new_order(order.clone()) {
                 self.send_order(order.clone(), Some(Order { cb: order.cb.clone(), elev_idx: order_elev_idx }));
-            } else {
-                println!("No available elevator for: {}", order);
             }
         }
     }
@@ -143,7 +141,6 @@ impl ManagerState {
         if self.cluster.is_master() {
             if let Some(&Position { floor, .. }) = self.positions.get(&elev_idx) {
                 if !self.order_list.has_assignment(elev_idx) {
-                    println!("{}", format!("Elev {} idle for 5 seconds, requesting work", elev_idx).yellow());
                     let order = Order { cb: CallButton { floor, call: CallType::Cab }, elev_idx };
                     self.want_order(order);
                     self.idle_wd.reset(elev_idx);

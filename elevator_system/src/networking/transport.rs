@@ -5,7 +5,6 @@ use tokio::net::UdpSocket;
 
 const MAX_MSG_BYTES: usize = 65507;
 const ACK_TIMEOUT: Duration = Duration::from_millis(5);
-const MAX_RETRIES: u32 = 5;
 
 #[derive(Serialize, Deserialize, Debug)]
 enum Frame {
@@ -21,22 +20,20 @@ pub async fn send_reliable(
 ) -> std::io::Result<()> {
     let frame = Frame::Data { seq, msg: msg.clone() };
     let payload = bincode::serialize(&frame).expect("serialize failed");
-    for attempt in 0..MAX_RETRIES {
-        socket.send_to(&payload, addr).await?;
-        match tokio::time::timeout(ACK_TIMEOUT, recv_ack(&socket, seq, &msg)).await {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                eprintln!(
-                    "ACK timeout for seq={seq}, attempt {}/{MAX_RETRIES}",
-                    attempt + 1
-                );
-            }
+
+    socket.send_to(&payload, addr).await?;
+    match tokio::time::timeout(ACK_TIMEOUT, recv_ack(&socket, seq, &msg)).await {
+        Ok(Ok(())) => return Ok(()),
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            eprintln!(
+                "ACK timeout for seq={seq}",
+            );
         }
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        format!("no ACK after {MAX_RETRIES} attempts"),
+        format!("no ACK"),
     ))
 }
 pub async fn recv_reliable(
