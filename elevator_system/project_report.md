@@ -1,4 +1,4 @@
-# Elevator System -- Group 10
+# Elevator System - Group 10
 
 ## Design Description
 
@@ -33,7 +33,7 @@ An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) pro
 
 ### The decision
 
-Rather than using a single scalar cost function (e.g., the provided hall-request-assigner pattern where `cost = f(distance, direction, load)`), we built a custom assignment system in `assignment.rs` that directly decides elevator scheduling.
+Rather than using the provided cost function we built a custom assignment system in `assignment.rs`. With this assigner each elevator only has a single active order, and receives the next on completion. 
 
 ### What we implemented
 
@@ -51,7 +51,9 @@ The standard approach is a unified cost function: compute a numeric score for ea
 
 ### Why we chose our approach
 
-Our system directly encodes the scheduling behaviors we wanted, especially preemption, which is awkward to express as a cost term. It avoids tuning arbitrary penalty weights. The tradeoff is maintainability: adding a new consideration means modifying control flow rather than adding a cost term. Another reason we chose a custom system is because we wanted to build as much as possible from scratch to learn. 
+Assigning one order at a time to each elevator shifts complexity from the elevator to the master. Each elevator is instructed to go to a floor, open its doors, and report completion. This gives the master better control when elevator states change and can improve order completion efficiency, although this is not required by the specification.
+
+The trade-off is maintainability: adding new considerations typically requires modifying control flow rather than adding a cost term. We also chose a custom system to build as much as possible from scratch for learning.
 
 ### Reflection
 
