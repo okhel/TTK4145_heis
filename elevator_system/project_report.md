@@ -11,7 +11,7 @@ Our elevator controller is written in Rust, running on the Tokio async runtime. 
 - **`order_manager`**: The central decision-maker. Maintains the order queue, current assignments, elevator positions, and role (master/slave). Translates between elevator events, network events, and the assignment logic.
 - **`store_online_elevators`**: Merges heartbeat pings into a membership list using a `BTreeMap<id, Instant>` with a 3-second timeout. Broadcasts the sorted alive list to both the network and order manager tasks.
 
-The Elevio driver was originally provided as a blocking script. We translated its polling loops into async Tokio tasks (`poll.rs`) that use `tokio::time::sleep` for periodic sampling at 25 ms intervals, while the underlying TCP I/O (`elev.rs`) remains synchronous behind an `Arc<Mutex<TcpStream>>`. This lets multiple polling tasks (buttons, floor sensor, obstruction) run concurrently within the Tokio runtime without dedicated OS threads.
+The Elevio driver was originally provided as a blocking script. We translated its polling loops into async Tokio tasks (`poll.rs`) that use `tokio::time::sleep` for periodic sampling at 25 ms intervals, while the underlying TCP I/O (`elev.rs`) remains synchronous behind an `Arc<Mutex<TcpStream>>`. This lets multiple polling tasks (buttons, floor sensor, obstruction) run concurrently within the Tokio runtime, providing logical separation.
 
 **Master election and failover:**
 The lowest online elevator ID is the master. When the alive set changes, each node re-evaluates its role. A new master kickstarts all known elevators with work requests and inherits any active orders from lost nodes by re-queuing them. State and queue synchronization messages are sent to newly joined nodes.
@@ -89,3 +89,16 @@ The tradeoff is complexity: we effectively reimplemented parts of TCP's reliabil
 ### Reflection
 
 The 5 ms ACK timeout works well on a local lab network but is fragile on higher-latency links. Adaptive timeouts with exponential backoff would be an improvement. Additionally, matching ACKs by full `Msg` equality (rather than just sequence number) provides strong consistency but increases bandwidth; a lightweight hash could achieve the same consistency at lower cost. Despite the added complexity, building this layer gave us fine-grained control that proved valuable during debugging. Every retry, timeout, and retarget is visible in our logs and we could easily track ACK messages. We could have considered existing Rust crates for reliable UDP (e.g., `laminar`), but once again we wanted to learn more about networking and how to make it reliable.
+
+## Future improvements
+Following are two improvements to address failures of the FAT.
+
+**Elevator not completing order on motor loss**
+
+When motor power is lost, the watchdog reassigns the order. Reassignment is guarded against stuck elevators, but not against elevators that have lost motor power.
+
+A future improvement is to add this guard.
+
+**Automatic restart**
+
+We also wrote code to restart dead elevators immediately, but did not get this to work reliably enough for the FAT.
