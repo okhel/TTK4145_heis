@@ -2,14 +2,14 @@
 
 ## Design Description
 
-Our system is a distributed elevator controller written in Rust, running on the Tokio async runtime. It controls up to three elevators across four floors, communicating over UDP on a local network. The architecture consists of four concurrent Tokio tasks spawned from `main.rs`, connected exclusively through `mpsc` and `broadcast` channels -- there is no shared mutable state between tasks.
+Our elevator controller is written in Rust, running on the Tokio async runtime. It has a Master-Slave topology, communicating over UDP. The architecture consists of four concurrent Tokio tasks spawned from `main.rs`, connected exclusively through `mpsc` and `broadcast` channels -- there are no shared variables between tasks.
 
 **Tasks and their roles:**
 
-- **`elevator_runner`** -- Interfaces with the elevator hardware (or simulator) via the Elevio TCP protocol. Spawns sub-tasks for polling buttons, floor sensors, and obstruction, plus a motor FSM and a light controller. Emits `ElevatorEvent`s (button presses, state updates, order completions) and receives `ElevatorCommand`s (assign order, set light).
-- **`network_runner`** -- Handles all UDP communication: heartbeat pings for liveness detection, and a two-layer reliable transport for order messages. Routes outbound messages based on role (master sends out to all peers; slave sends only to master).
-- **`order_manager`** -- The central decision-maker. Maintains the order queue, current assignments, elevator positions, and role (master/slave). Translates between elevator events, network events, and the assignment logic.
-- **`store_online_elevators`** -- Merges heartbeat pings into a membership list using a `BTreeMap<id, Instant>` with a 3-second timeout. Broadcasts the sorted alive list to both the network and order manager tasks.
+- **`elevator_runner`**: Interfaces with the elevator hardware (or simulator) via the Elevio TCP protocol. Spawns sub-tasks for polling buttons, floor sensors, and obstruction, plus a motor FSM and a light controller. Issues `ElevatorEvent`s (button presses, state updates, order completions) and receives `ElevatorCommand`s (assign order, set light).
+- **`network_runner`**: Handles all UDP communication: heartbeat pings for liveness detection, and a two-layer reliable transport for order messages. Routes outbound messages based on role (master sends out to all peers; slave sends only to master).
+- **`order_manager`**: The central decision-maker. Maintains the order queue, current assignments, elevator positions, and role (master/slave). Translates between elevator events, network events, and the assignment logic.
+- **`store_online_elevators`**: Merges heartbeat pings into a membership list using a `BTreeMap<id, Instant>` with a 3-second timeout. Broadcasts the sorted alive list to both the network and order manager tasks.
 
 The Elevio driver was originally provided as a blocking script. We translated its polling loops into async Tokio tasks (`poll.rs`) that use `tokio::time::sleep` for periodic sampling at 25 ms intervals, while the underlying TCP I/O (`elev.rs`) remains synchronous behind an `Arc<Mutex<TcpStream>>`. This lets multiple polling tasks (buttons, floor sensor, obstruction) run concurrently within the Tokio runtime without dedicated OS threads.
 
@@ -19,9 +19,9 @@ The lowest online elevator ID is the master. When the alive set changes, each no
 **Fault tolerance mechanisms:**
 An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) prompts the master to assign queued work to idle elevators. Lost elevators have their current orders put back into the assignment pipeline. A receive-side deduplication window (3 s) prevents double-processing of the same message. On panic, the process aborts immediately so the heartbeat timeout triggers peer-side recovery.
 
-<!-- FIGURE 1: Module interaction diagram (replace with actual figure) -->
+![Module interaction diagram](Module_interfaces.png)
 
-*Figure 1: Module interaction diagram. Four Tokio tasks communicate through typed channels. The order manager is the sole bridge between the elevator and network domains.*
+*Figure 1: Module interaction diagram. Four Tokio tasks communicate through typed channels. The order manager is the sole bridge between the elevator and network domains*
 
 <!-- FIGURE 2: Order lifecycle (replace with actual figure) -->
 
