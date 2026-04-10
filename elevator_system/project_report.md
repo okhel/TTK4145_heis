@@ -25,6 +25,8 @@ An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) pro
 
 <!-- FIGURE 2: Order lifecycle (replace with actual figure) -->
 
+![Module interaction diagram](order_lifecycle.png)
+
 *Figure 2: Order lifecycle. A button press produces a `RequestOrder` sent to the master. After all peers acknowledge (`AckComplete`), the master broadcasts `QueueOrders` (turning on lights), runs assignment, and sends `AssignOrders` to the chosen elevator. On arrival, the elevator sends `CompleteOrder`; the master assigns the next order and broadcasts `ClearOrders` to turn off lights.*
 
 ## Case Study 1: Custom Order Assignment Module
