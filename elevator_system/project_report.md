@@ -2,7 +2,7 @@
 
 ## Design Description
 
-Our elevator controller is written in Rust, running on the Tokio async runtime. It has a Master-Slave topology, communicating over UDP. The architecture consists of four concurrent Tokio tasks spawned from `main.rs`, connected exclusively through `mpsc` and `broadcast` channels -- there are no shared variables between tasks.
+Our elevator controller is written in Rust, running on the Tokio async runtime. It has a Master-Slave topology, communicating over UDP. The architecture consists of four concurrent Tokio tasks spawned from `main.rs`, connected exclusively through `mpsc` and `broadcast` channels, there are no shared variables between tasks.
 
 **Tasks and their roles:**
 
@@ -95,9 +95,9 @@ We built a custom reliable transport over UDP rather than using TCP or an existi
 
 The transport has two layers:
 
-**Layer 1 -- Per-datagram reliability** (`transport.rs`): Each `Msg` is wrapped in a `Frame::Data { seq, msg }` and serialized with bincode. The sender retries every 5 ms until it receives a `Frame::Ack` matching both the sequence number *and* the full message content, or gives up after 10,000 attempts. The receiver sends three copies of each ACK to reduce ACK-loss probability. Each send spawns its own Tokio task with its own UDP socket, so multiple reliable sends proceed concurrently.
+**Layer 1: Per-datagram reliability** (`transport.rs`): Each `Msg` is wrapped in a `Frame::Data { seq, msg }` and serialized with bincode. The sender retries every 5 ms until it receives a `Frame::Ack` matching both the sequence number *and* the full message content, or gives up after a set amount of attempts. The receiver sends three copies of each ACK to reduce ACK-loss probability. Each send spawns its own Tokio task with its own UDP socket, so multiple reliable sends proceed concurrently.
 
-**Layer 2 -- Application-level multicast completion** (`networking.rs`, `pending.rs`): Each outbound message is assigned a sequence number and a `PendingMap` entry tracking which peers must complete their sends. Only when all targeted peers succeed (or are removed due to going offline) does the order manager receive `AckComplete`. This guarantees that the master does not assign an order until all peers have received the queue update.
+**Layer 2: Confirming message arrival to all peers** (`networking.rs`, `pending.rs`): Each message is assigned a sequence number and a `PendingMap` entry tracking which peers must ACK the message. Only when all targeted peers succeed (or are removed due to going offline) does the order manager receive `AckComplete`. This guarantees that the master does not assign an order until all peers have received the queue update.
 
 Failure handling adapts to role: if a slave's send to the master fails, it retargets to the new `master_id` in the pending set. Otherwise, up to 20 application-level retries are attempted before giving up and resolving the peer to avoid deadlock.
 
@@ -109,16 +109,15 @@ TCP provides reliable, ordered delivery out of the box, eliminating both layers.
 
 Three properties drove the decision:
 
-- **Dynamic routing**: Our master-slave topology changes at runtime. A slave must retarget mid-flight to a new master if the current one dies. UDP's connectionless model lets us switch destination addresses per-message without teardown/reconnection. Sending messages between each elevator is also simpler, as there is no need to set up a persistent connection for each elevator to eachother. 
-- **No head-of-line blocking**: Our messages are independent; a delayed message should not block subsequent ones. TCP's ordered stream would stall everything behind a lost packet, creating delays. 
-- **Explicit failure semantics**: `handle_send_failure` implements role-aware retry logic (slave retargets, master resolves) that would be hard to express through TCP's opaque retry/timeout behavior.
-- **ACK-tracking**: We found no way to check if a TCP packet had actually been ACK-ed, so we struggled to make sure that we could e.g turn on lights, because we were not yet sure if the packet had arrived to all elevators. Implementing our own ACK system with UDP allowed us to track ACKs at application level, so we could make sure the messages had arrived. 
+- **Dynamic routing**: Our master-slave topology changes at runtime with disconnects. A slave must retarget mid-flight to a new master if the current one dies. UDP's connectionless model lets us switch destination addresses per-message without having to reconnect to a new host. Sending messages between each elevator is also simpler, as there is no need to set up a persistent connection for each elevator to eachother. 
+- **No head-of-line blocking**: Our messages are independent; a delayed message should not block subsequent ones. TCP's ordered stream would stall everything behind a lost packet, creating delays in our real-time system. 
+- **ACK-tracking**: We found no way to check if a TCP packet had actually been ACK-ed, so we struggled to make sure that we could perform certain actions, because we were not yet sure if the packet had arrived to all elevators. Implementing our own ACK system with UDP allowed us to track ACKs at application level, so we could make sure a messages had arrived before we performed actions. 
 
 The tradeoff is complexity: we effectively reimplemented parts of TCP's reliability guarantees.
 
 ### Reflection
 
-The 5 ms ACK timeout works well on a local lab network but is fragile on higher-latency links. Adaptive timeouts with exponential backoff would be an improvement. Additionally, matching ACKs by full `Msg` equality (rather than just sequence number) provides strong consistency but increases bandwidth; a lightweight hash could achieve the same consistency at lower cost. Despite the added complexity, building this layer gave us fine-grained control that proved valuable during debugging. Every retry, timeout, and retarget is visible in our logs and we could easily track ACK messages. We could have considered existing Rust crates for reliable UDP (e.g., `laminar`), but once again we wanted to learn more about networking and how to make it reliable.
+Matching ACKs by full `Msg` equality (rather than just sequence number) provides strong consistency but is a bit heavy-handed; a lightweight hash could achieve the same consistency at lower cost. Despite the added complexity, building this layer gave us fine-grained control that proved valuable during debugging. Every retry, timeout, and retarget is visible in our logs and we could easily track ACK messages. This module suffers from the same problem most of our modules do, it has a lot of input channels and the functions are fairly large and involved. We could probably have saved ourselves a lot of work and headache by using existing Rust crates for reliable UDP (like `laminar`), but we were interested in networking and wanted to try our hand at it. 
 
 ## Future improvements
 Following are two improvements to address failures of the FAT.
