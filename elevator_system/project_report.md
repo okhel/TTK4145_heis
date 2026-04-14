@@ -11,15 +11,22 @@ Our elevator controller is written in Rust, running on the Tokio async runtime. 
 - **`order_manager`**: The central decision-maker. Maintains the order queue, current assignments, elevator positions, and role (master/slave). Translates between elevator events, network events, and the assignment logic.
 - **`store_online_elevators`**: Merges heartbeat pings into a membership list using a `BTreeMap<id, Instant>` with a 3-second timeout. Broadcasts the sorted alive list to both the network and order manager tasks.
 
-The Elevio driver was originally provided as a blocking script. We translated its polling loops into async Tokio tasks (`poll.rs`) that use `tokio::time::sleep` for periodic sampling at 25 ms intervals, while the underlying TCP I/O (`elev.rs`) remains synchronous behind an `Arc<Mutex<TcpStream>>`. This lets multiple polling tasks (buttons, floor sensor, obstruction) run concurrently within the Tokio runtime, providing logical separation.
+The Elevio driver was originally blocking. We moved polling into async Tokio tasks (`poll.rs`) with 25 ms sampling, while keeping TCP I/O (`elev.rs`) synchronous behind `Arc<Mutex<TcpStream>>`. This gives concurrent button/floor/obstruction polling with clear task boundaries.
 
 **Master election and failover:**
 The elevator with the lowest online ID acts as the master. When the set of active nodes changes, each node re-evaluates its role. A challenge arises when a new elevator joins an already established system, as heartbeat signals arrive sequentially. Therefore, master election cannot be performed immediately after the first received heartbeat, since additional heartbeats may still arrive.
 The solution is to use a debounce timer that resets whenever an elevator joins or disconnects. Only when the timer expires is it considered safe to perform master election. This introduces a delay, but at the scale of seconds it is acceptable, given that (re)connections are infrequent.
-A new master kickstarts all known elevators with work requests and inherits any active orders from lost nodes by re-queuing them. State and queue synchronization messages are sent to newly joined nodes. 
+A new master ignores the orders slaves are already assigned to,kickstarts all known elevators with work requests, and inherits any active orders from lost nodes by re-queuing them. State and queue synchronization messages are sent to newly joined nodes. 
 
 **Fault tolerance mechanisms:**
 An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) prompts the master to assign queued work to idle elevators. Lost elevators have their current orders put back into the assignment pipeline. A receive-side deduplication window (3 s) prevents double-processing of the same message. On panic, the process aborts immediately so the heartbeat timeout triggers peer-side recovery.
+
+### Specification coverage (pre-FAT)
+
+- **Distributed execution and communication:** Multiple elevators coordinate via heartbeat-based membership and UDP message passing.
+- **Order handling:** Hall/cab orders are queued, assigned, completed, and synchronized through `QueueOrders`, `AssignOrders`, and `ClearOrders`.
+- **Failure handling:** Master failover, re-queueing on lost peers, and watchdog-based recovery are implemented.
+- **Known gaps (see Future improvements):** Motor-loss handling is incomplete, and automatic process restart was not robust enough for FAT.
 
 ![Module interaction diagram](Module_interfaces.png)
 
@@ -35,31 +42,48 @@ An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) pro
 
 ### The decision
 
-Rather than using the provided cost function we built a custom assignment system in `assignment.rs`. With this assigner each elevator only has a single active order, and receives the next on completion. 
+We built a custom assignment module in `assignment.rs` instead of the provided cost-function assigner. We wanted explicit per-order control in the master and fast replanning when state changes (obstruction, direction changes, peer loss). Each elevator is assigned to one active order and receives the next from the master upon completion.
 
 ### What we implemented
+The master executes order assignment, synchronizes the uncompleted-order list with peers, and instructs selected elevators to serve each order. The flow is shown in Figure 2:
+
+1. Elevator informs master of button press.
+2. Master informs all peers of the order.
+3. All peers receive order
+3. Master informs peers order is to be served, with `QueueOrders` 
+5. The master sends `AssignOrders` to the selected elevator.
+6. Elevator completes order and sends `CompleteOrder`
+7. Master informs peers to `ClearOrders`
 
 When a new order arrives, `assign_new_order` splits online elevators into busy and idle sets (excluding obstructed elevators), then applies two strategies in sequence:
 
-1. **Preemption** (`pause_order`): If a busy elevator is currently traveling past the new hall call "on the way" (determined geometrically by `order_on_the_way`, which checks floor ordering and call direction), its current order is stashed at the front of the queue and the new order is assigned instead. This avoids the elevator ignoring a stop it could have served.
+1. **Interruption** (`pause_order`): If a busy elevator is currently traveling past the new hall call "on the way" (determined by `order_on_the_way`, which checks floor ordering and call direction), its current order is stashed at the front of the queue and the new order is assigned instead. This avoids the elevator ignoring a stop it could have served.
 
 2. **Closest idle** (`find_closest_elev`): Among idle elevators, pick the one minimizing `abs_diff(floor, order.floor)`.
 
 After an order is completed, `assign_next_order` selects the next order. It prefers cab orders in the current travel direction, checks whether a direction reversal is warranted, and refines the choice with `find_closest_order_otw` to pick the nearest eligible "on the way" order. The queue itself is structured with cab orders before hall orders (`rebuild_queue`).
 
+Queue changes are broadcast to peers using `QueueOrders` and `ClearOrders`.
+
 ### Alternative not chosen
 
-The standard approach is a unified cost function: compute a numeric score for each elevator-order pair (incorporating distance, direction penalty, current load) and assign to the minimum. This is conceptually simpler, more extensible, and easier to reason about formally.
+A cost-function assigner would score each elevator for each new hall order and pick the minimum score. We did not choose this because we prioritized deterministic rule-based behavior, unified hall/cab handling in one module, and explicit queue control over weight tuning.
 
 ### Why we chose our approach
 
-Assigning one order at a time to each elevator shifts complexity from the elevator to the master. Each elevator is instructed to go to a floor, open its doors, and report completion. This gives the master better control when elevator states change and can improve order completion efficiency, although this is not required by the specification.
-
-The trade-off is maintainability: adding new considerations typically requires modifying control flow rather than adding a cost term. We also chose a custom system to build as much as possible from scratch for learning.
+Assigning one order at a time shifts complexity from elevators to the master. Elevators only execute commands and report completion. A key reason for this design is unified order handling: hall and cab orders are managed in one module with one decision flow.
 
 ### Reflection
 
-Building the module from scratch gave a big learning benefit, but using a simpler cost function or the already provided code would be simpler and probably reduce complexity. At the same time, a custom system allowed us to customize the order behaviour of the elevator more than a pre-made package would. 
+Building the module from scratch gave a big learning benefit, but 
+using a simpler cost function or the already provided code would 
+be simpler and probably reduce complexity. At the same time, a 
+custom system allowed us to customize the order behaviour of the 
+elevator more than a pre-made package would. 
+
+We spent substantial time evaluating control flow to cover scenarios, with more testing and bug fixing than we likely would have needed with a cost-function approach. We still consider this effort worthwhile for completeness, because we wanted to develop the entire project ourselves (except Elevio).
+
+After extensive scenario testing we are confident the assignment logic is 100% correct, the remaining tradeoff is maintainability: new behavior usually means more branching logic instead of one extra score term. The benefit is traceability; all order decisions are centralized in `assignment.rs` and explainable from explicit rules in logs/code paths.
 
 ## Case Study 2: Reliable UDP with Two-Layer Acking
 
