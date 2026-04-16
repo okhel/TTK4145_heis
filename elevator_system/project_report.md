@@ -7,7 +7,7 @@ Our elevator controller is written in Rust, running on the Tokio async runtime. 
 **Tasks and their roles:**
 
 - **`elevator_runner`**: Interfaces with the elevator hardware (or simulator) via the Elevio TCP protocol. Spawns sub-tasks for polling buttons, floor sensors, and obstruction, plus a motor FSM and a light controller. Issues `ElevatorEvent`s (button presses, state updates, order completions) and receives `ElevatorCommand`s (assign order, set light).
-- **`network_runner`**: Handles all UDP communication: heartbeat pings for liveness detection, and a two-layer reliable transport for order messages. Routes outbound messages based on role (master sends out to all peers; slave sends only to master).
+- **`network_runner`**: Handles all UDP communication: heartbeat pings for liveness detection, and a two-layer reliable transport for order messages. Routes outbound messages based on role (master sends out to all peers and slave sends only to master).
 - **`order_manager`**: The central decision-maker. Maintains the order queue, current assignments, elevator positions, and role (master/slave). Translates between elevator events, network events, and the assignment logic.
 - **`store_online_elevators`**: Merges heartbeat pings into a membership list using a `BTreeMap<id, Instant>` with a 3-second timeout. Broadcasts the sorted alive list to both the network and order manager tasks.
 
@@ -16,10 +16,10 @@ The Elevio driver was originally blocking. We moved polling into async Tokio tas
 **Master election and failover:**
 The elevator with the lowest online ID acts as the master. When the set of active nodes changes, each node re-evaluates its role. A challenge arises when a new elevator joins an already established system, as heartbeat signals arrive sequentially. Therefore, master election cannot be performed immediately after the first received heartbeat, since additional heartbeats may still arrive.
 The solution is to use a debounce timer that resets whenever an elevator joins or disconnects. Only when the timer expires is it considered safe to perform master election. This introduces a delay, but at the scale of seconds it is acceptable, given that (re)connections are infrequent.
-A new master ignores the orders slaves are already assigned to,kickstarts all known elevators with work requests, and inherits any active orders from lost nodes by re-queuing them. State and queue synchronization messages are sent to newly joined nodes. 
+A new master ignores the orders that slaves are already assigned to, kickstarts all known elevators with work requests, and inherits any active orders from lost nodes by re-queuing them. State and queue synchronization messages are sent to newly joined nodes. 
 
 **Fault tolerance mechanisms:**
-An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) prompts the master to assign queued work to idle elevators. Lost elevators have their current orders put back into the assignment pipeline. A receive-side deduplication window (3 s) prevents double-processing of the same message. On panic, the process aborts immediately so the heartbeat timeout triggers peer-side recovery.
+An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) prompts the master to assign queued work to idle elevators. Lost elevators have their current orders put back into the assignment pipeline. A receive-side deduplication window (3 s) prevents double-processing of the same message. On panic, the process aborts immediately.
 
 ### Specification coverage (pre-FAT)
 
@@ -117,7 +117,7 @@ The tradeoff is complexity: we effectively reimplemented parts of TCP's reliabil
 
 ### Reflection
 
-Matching ACKs by full `Msg` equality (rather than just sequence number) provides strong consistency but is a bit heavy-handed; a lightweight hash could achieve the same consistency at lower cost. Despite the added complexity, building this layer gave us fine-grained control that proved valuable during debugging. Every retry, timeout, and retarget is visible in our logs and we could easily track ACK messages. This module suffers from the same problem most of our modules do, it has a lot of input channels and the functions are fairly large and involved. We could probably have saved ourselves a lot of work and headache by using existing Rust crates for reliable UDP (like `laminar`), but we were interested in networking and wanted to try our hand at it. 
+Matching ACKs by full `Msg` equality (rather than just sequence number) provides strong consistency but is a bit heavy-handed. A lightweight hash could achieve the same consistency at lower cost. Despite the added complexity, building this layer gave us fine-grained control that proved valuable during debugging. Every retry, timeout, and retarget is visible in our logs and we could easily track ACK messages. This module suffers from the same problem most of our modules do, it has a lot of input channels and the functions are fairly large and involved. We could probably have saved ourselves a lot of work and headache by using existing Rust crates for reliable UDP (like `laminar`), but we were interested in networking and wanted to try our hand at it. 
 
 ## Future improvements
 Following are two improvements to address failures of the FAT.
@@ -127,6 +127,10 @@ Following are two improvements to address failures of the FAT.
 When motor power is lost, the watchdog reassigns the order. Reassignment is guarded against stuck elevators, but not against elevators that have lost motor power.
 
 A future improvement is to add this guard.
+
+**Readability**
+
+The code would benefit from cleanup and restructuring to improve readability, as it is currently difficult for outsiders to understand. Some components, such as the order manager, have grown too large and could be split into an assigner and a coordinator. Adding a few well-placed comments to clarify the program flow and function usage would also help. Additionally, "hiding" the elevator selection and other such algorithms would make the overall structure easier to grasp, since there would be less code and their internal logic is secondary to the big picture.
 
 **Automatic restart**
 
