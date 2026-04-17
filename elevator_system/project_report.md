@@ -68,14 +68,14 @@ Assigning one order at a time shifts complexity from elevators to the master. El
 ### Reflection
 
 Building the module from scratch gave a big learning benefit, but 
-using a simpler cost function or the already provided code would 
-be simpler and probably reduce complexity. At the same time, a 
+using the provided cost function would 
+be simpler and likely reduce complexity. Still, a 
 custom system allowed us to customize the order behaviour of the 
 elevator more than a pre-made package would. 
 
 We spent substantial time evaluating control flow to cover scenarios, with more testing and bug fixing than we likely would have needed with a cost-function approach. We still consider this effort worthwhile for completeness, because we wanted to develop the entire project ourselves (except Elevio).
 
-After extensive scenario testing we are confident the assignment logic is 100% correct, the remaining tradeoff is maintainability: new behavior usually means more branching logic instead of one extra score term. The benefit is traceability; all order decisions are centralized in `assignment.rs` and explainable from explicit rules in logs/code paths.
+The remaining tradeoff is maintainability: new behavior usually means more branching logic instead of one extra score term. The benefit is traceability; all order decisions are centralized in `assignment.rs` and explainable from explicit rules in logs/code paths.
 
 ## Case Study 2: Reliable UDP with Two-Layer Acking
 
@@ -112,17 +112,17 @@ The tradeoff is complexity: we effectively reimplemented parts of TCP's reliabil
 Despite the added complexity of our solution, building this layer gave us fine-grained control that proved valuable during debugging through more detailed logs of messages. This module suffers from the same problem most of our modules do, it has a lot of input channels and the functions are fairly large and involved. We could probably have saved ourselves a lot of work and headache by using existing Rust crates for reliable UDP (like `laminar`), but we were interested in networking and wanted to try our hand at it. 
 
 ## Future improvements
-Following are two improvements to address failures of the FAT.
 
 **Elevator not completing order on motor loss**
 
-When motor power is lost, the watchdog reassigns the order. Reassignment is guarded against stuck elevators, but not against elevators that have lost motor power.
-
-A future improvement is to add this guard.
+When motor power is lost, the watchdog reassigns the order. Reassignment is guarded against stuck elevators, but not against elevators that have lost motor power. A future improvement is to add this guard.
 
 **Readability**
 
-The code would benefit from cleanup and restructuring to improve readability, as it is currently difficult for outsiders to understand. Some components, such as the order manager, have grown too large and could be split into an assigner and a coordinator. Adding a few well-placed comments to clarify the program flow and function usage would also help. Additionally, "hiding" the elevator selection and other such algorithms would make the overall structure easier to grasp, since there would be less code and their internal logic is secondary to the big picture.
+The code would benefit from cleanup and restructuring to improve readability, as it is currently difficult for outsiders to understand.
+ - Some components, e.g. order manager, have grown too large and could be split into an assigner and a coordinator.
+- Adding a few well-placed comments
+- Pure functions from `assignment.rs` could be moved to a separate file to make the the control flow clearer
 
 **Automatic restart**
 
