@@ -99,7 +99,7 @@ TCP provides reliable, ordered delivery out of the box, eliminating both layers.
 
 ### Why we chose UDP + custom acking
 
-Three properties drove the decision:
+We decided fairly early that we wanted to use UDP, but then switched to TCP because we did not want to "reinvent the wheel". After a week we realized implementing UDP with a few TCP features would be more practical. Three properties drove the decision:
 
 - **Dynamic routing**: Our master-slave topology changes at runtime with disconnects. A slave must retarget mid-flight to a new master if the current one dies. UDP's connectionless model lets us switch destination addresses per-message without having to reconnect to a new host. Sending messages between each elevator is also simpler, as there is no need to set up a persistent connection for each elevator to eachother. 
 - **No head-of-line blocking**: Our messages are independent; a delayed message should not block subsequent ones. TCP's ordered stream would stall everything behind a lost packet, creating delays in our real-time system. 
@@ -109,7 +109,7 @@ The tradeoff is complexity: we effectively reimplemented parts of TCP's reliabil
 
 ### Reflection
 
-Matching ACKs by full `Msg` equality (rather than just sequence number) provides strong consistency but is a bit heavy-handed. A lightweight hash could achieve the same consistency at lower cost. Despite the added complexity, building this layer gave us fine-grained control that proved valuable during debugging. Every retry, timeout, and retarget is visible in our logs and we could easily track ACK messages. This module suffers from the same problem most of our modules do, it has a lot of input channels and the functions are fairly large and involved. We could probably have saved ourselves a lot of work and headache by using existing Rust crates for reliable UDP (like `laminar`), but we were interested in networking and wanted to try our hand at it. 
+Despite the added complexity of our solution, building this layer gave us fine-grained control that proved valuable during debugging through more detailed logs of messages. This module suffers from the same problem most of our modules do, it has a lot of input channels and the functions are fairly large and involved. We could probably have saved ourselves a lot of work and headache by using existing Rust crates for reliable UDP (like `laminar`), but we were interested in networking and wanted to try our hand at it. 
 
 ## Future improvements
 Following are two improvements to address failures of the FAT.
