@@ -20,22 +20,15 @@ The new master then redistributes all orders.
 **Fault tolerance mechanisms:**
 An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) prompts the master to assign queued work to idle elevators. Lost elevators have their current orders put back into the assignment pipeline. A receive-side deduplication window (3 s) prevents double-processing of the same message. On panic, the process aborts immediately.
 
-### Specification coverage (pre-FAT)
-
-- **Distributed execution and communication:** Multiple elevators coordinate via heartbeat-based membership and UDP message passing.
-- **Order handling:** Hall/cab orders are queued, assigned, completed, and synchronized through `QueueOrders`, `AssignOrders`, and `ClearOrders`.
-- **Failure handling:** Master failover, re-queueing on lost peers, and watchdog-based recovery are implemented.
-- **Known gaps (see Future improvements):** Motor-loss handling is incomplete, and automatic process restart was not robust enough for FAT.
-
 ![Module interaction diagram](Module_interfaces.png)
 
-*Figure 1: Module interaction diagram. Four Tokio tasks communicate through typed channels. The order manager is the sole bridge between the elevator and network domains*
+*Figure 1: Module interaction diagram.
 
 <!-- FIGURE 2: Order lifecycle (replace with actual figure) -->
 
 ![Module interaction diagram](order_lifecycle.png)
 
-*Figure 2: Order lifecycle. A button press produces a `RequestOrder` sent to the master. After all peers acknowledge (`AckComplete`), the master broadcasts `QueueOrders` (turning on lights), runs assignment, and sends `AssignOrders` to the chosen elevator. On arrival, the elevator sends `CompleteOrder`; the master assigns the next order and broadcasts `ClearOrders` to turn off lights.*
+*Figure 2: Order lifecycle*
 
 ## Case Study 1: Custom Order Assignment Module
 
