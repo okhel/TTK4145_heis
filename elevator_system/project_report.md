@@ -1,13 +1,11 @@
-# Elevator System - Group 10
-
 ## Design Description
 
-Our elevator controller is written in Rust, running on the Tokio async runtime. It has a Master-Slave topology, communicating over UDP. The architecture consists of four concurrent Tokio tasks spawned from `main.rs`, connected exclusively through `mpsc` and `broadcast` channels, there are no shared variables between tasks.
+Our elevator controller is written in Rust, running on the Tokio async runtime. It has a Master-Slave topology, communicating over UDP. The architecture consists of four concurrent Tokio tasks spawned from `main.rs`, connected exclusively through channels.
 
 **Tasks and their roles:**
 
-- **`elevator_runner`**: Interfaces with the elevator hardware (or simulator) via the Elevio TCP protocol. Spawns sub-tasks for polling buttons, floor sensors, and obstruction, plus a motor FSM and a light controller. Issues `ElevatorEvent`s (button presses, state updates, order completions) and receives `ElevatorCommand`s (assign order, set light).
-- **`network_runner`**: Handles all UDP communication: heartbeat pings for liveness detection, and a two-layer reliable transport for order messages. Routes outbound messages based on role (master sends out to all peers and slave sends only to master).
+- **`elevator_runner`**: Interfaces with the elevator hardware (or simulator) via the Elevio TCP protocol. Spawns sub-tasks for polling sensors, a motor controller and a light controller. Issues `ElevatorEvent`s (button presses, state updates, order completions) and receives `ElevatorCommand`s (assign order, set light).
+- **`network_runner`**: Handles all UDP communication: heartbeat pings, and a two-layer reliable transport for messages. Routes outbound messages based on role (master sends out to all peers and slave sends only to master).
 - **`order_manager`**: The central decision-maker. Maintains the order queue, current assignments, elevator positions, and role (master/slave). Translates between elevator events, network events, and the assignment logic.
 - **`store_online_elevators`**: Merges heartbeat pings into a membership list using a `BTreeMap<id, Instant>` with a 3-second timeout. Broadcasts the sorted alive list to both the network and order manager tasks.
 
@@ -47,7 +45,7 @@ The master executes order assignment, synchronizes the uncompleted-order list wi
 6. Elevator completes order and sends `CompleteOrder`
 7. Master informs peers to `ClearOrders`
 
-When a new order arrives, `assign_new_order` splits online elevators into busy and idle sets (excluding obstructed elevators), then applies two strategies in sequence:
+When a new order arrives, `assign_new_order` designates busy and idle elevators, then applies two strategies in sequence:
 
 1. **Interruption** (`pause_order`): If a busy elevator is currently traveling past the new hall call "on the way" (determined by `order_on_the_way`, which checks floor ordering and call direction), its current order is stashed at the front of the queue and the new order is assigned instead. This avoids the elevator ignoring a stop it could have served.
 
@@ -70,8 +68,7 @@ Assigning one order at a time shifts complexity from elevators to the master. El
 Building the module from scratch gave a big learning benefit, but 
 using the provided cost function would 
 be simpler and likely reduce complexity. Still, a 
-custom system allowed us to customize the order behaviour of the 
-elevator more than a pre-made package would. 
+custom system gave increased control of order management behaviour. 
 
 We spent substantial time evaluating control flow to cover scenarios, with more testing and bug fixing than we likely would have needed with a cost-function approach. We still consider this effort worthwhile for completeness, because we wanted to develop the entire project ourselves (except Elevio).
 
@@ -115,7 +112,7 @@ Despite the added complexity of our solution, building this layer gave us fine-g
 
 **Elevator not completing order on motor loss**
 
-When motor power is lost, the watchdog reassigns the order. Reassignment is guarded against stuck elevators, but not against elevators that have lost motor power. A future improvement is to add this guard.
+When motor power is lost, the watchdog reassigns the order. Reassignment ignores stuck elevators, but not elevators with motor loss. A future improvement is to add this guard.
 
 **Readability**
 
