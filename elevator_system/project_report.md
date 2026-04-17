@@ -91,7 +91,7 @@ The transport has two layers:
 
 **Layer 2: Confirming message arrival to all peers** (`networking.rs`, `pending.rs`): Each message is assigned a sequence number and a `PendingMap` entry tracking which peers must ACK the message. Only when all targeted peers succeed (or are removed due to going offline) does the order manager receive `AckComplete`. This guarantees that the master does not assign an order until all peers have received the queue update.
 
-Failure handling adapts to role: if a slave's send to the master fails, it retargets to the new `master_id` in the pending set. Otherwise, up to 20 application-level retries are attempted before giving up and resolving the peer to avoid deadlock.
+Failure handling adapts to role: if a slave's send to the master fails, it retargets to the new `master_id` in the pending set. 
 
 ### Alternative not chosen
 
