@@ -14,9 +14,8 @@ Our elevator controller is written in Rust, running on the Tokio async runtime. 
 The Elevio driver was originally blocking. We moved polling into async Tokio tasks (`poll.rs`) with 25 ms sampling, while keeping TCP I/O (`elev.rs`) synchronous behind `Arc<Mutex<TcpStream>>`. This gives concurrent button/floor/obstruction polling with clear task boundaries.
 
 **Master election and failover:**
-The elevator with the lowest online ID acts as the master. When the set of active nodes changes, each node re-evaluates its role. A challenge arises when a new elevator joins an already established system, as heartbeat signals arrive sequentially. Therefore, master election cannot be performed immediately after the first received heartbeat, since additional heartbeats may still arrive.
-The solution is to use a debounce timer that resets whenever an elevator joins or disconnects. Only when the timer expires is it considered safe to perform master election. This introduces a delay, but at the scale of seconds it is acceptable, given that (re)connections are infrequent.
-A new master ignores the orders that slaves are already assigned to, kickstarts all known elevators with work requests, and inherits any active orders from lost nodes by re-queuing them. State and queue synchronization messages are sent to newly joined nodes. 
+The elevator with the lowest ID acts as the master. A debounce timer ensures that pings have been received from all alive peers before master election.
+The new master then redistributes all orders. 
 
 **Fault tolerance mechanisms:**
 An order watchdog (15 s) re-queues stuck assignments. An idle watchdog (3 s) prompts the master to assign queued work to idle elevators. Lost elevators have their current orders put back into the assignment pipeline. A receive-side deduplication window (3 s) prevents double-processing of the same message. On panic, the process aborts immediately.
