@@ -9,7 +9,7 @@ Our elevator controller is written in Rust, running on the Tokio async runtime. 
 - **`order_manager`**: The central decision-maker. Maintains the order queue, current assignments, elevator positions, and role (master/slave). Translates between elevator events, network events, and the assignment logic.
 - **`store_online_elevators`**: Merges heartbeat pings into a membership list using a `BTreeMap<id, Instant>` with a 3-second timeout. Broadcasts the sorted alive list to both the network and order manager tasks.
 
-The Elevio driver was originally blocking. We moved polling into async Tokio tasks (`poll.rs`) with 25 ms sampling, while keeping TCP I/O (`elev.rs`) synchronous behind `Arc<Mutex<TcpStream>>`. This gives concurrent button/floor/obstruction polling with clear task boundaries.
+The Elevio driver was originally blocking. We moved polling into async Tokio tasks (`poll.rs`) with 25 ms sampling, while keeping TCP I/O (`elev.rs`) synchronous behind `Arc<Mutex<TcpStream>>`. This gives concurrent sensor polling, motor control and light control, with clear task boundaries.
 
 **Master election and failover:**
 The elevator with the lowest ID acts as the master. A debounce timer ensures that pings have been received from all alive peers before master election.
